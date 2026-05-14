@@ -283,25 +283,28 @@ function renderPoolQuota() {
   if (!host) return;
   const summary = state.quotaPool || buildPoolQuotaSummary();
   const kind = poolQuotaKind(summary);
-  host.className = `quota-pool quota-pool-${kind}`;
+  host.className = `quota-pool quota-meter ${quotaStateClass(kind)}`;
 
   const used = finiteNumber(summary.monthly_used);
   const budget = finiteNumber(summary.monthly_budget);
   const remaining = finiteNumber(summary.monthly_remaining) ?? (budget != null && used != null ? Math.max(0, budget - used) : null);
   const ratio = finiteNumber(summary.usage_ratio) ?? (budget != null && budget > 0 && used != null ? used / budget : null);
-  const hasMonthly = budget != null || used != null || remaining != null;
-  $('pool-quota-primary').textContent = hasMonthly
-    ? (budget != null || used != null ? `${formatCurrency(used) || '—'} / ${formatCurrency(budget) || '—'}` : `${t('account.quota.remaining')} ${formatCurrency(remaining) || remaining}`)
-    : t('account.poolQuota.unavailable');
+  const percent = ratio == null ? null : Math.max(0, Math.min(100, ratio * 100));
+  const pctText = percent == null ? '' : `${t('account.quota.usedShort') || t('account.quota.used')} ${Math.round(percent)}%`;
+  const remainingText = remaining != null ? `${t('account.quota.remaining')} ${formatCurrency(remaining) || remaining}` : '';
+  const statusText = [pctText, remainingText].filter(Boolean).join(' · ');
+  const summaryText = (budget != null || used != null)
+    ? `${t('account.quota.usedShort') || t('account.quota.used')} ${formatCurrency(used) || '—'} / ${formatCurrency(budget) || '—'}`
+    : '';
+  $('pool-quota-primary').textContent = statusText || summaryText || t('account.poolQuota.unavailable');
 
   const track = $('pool-quota-track');
   const fill = $('pool-quota-fill');
-  const percent = ratio == null ? null : Math.max(0, Math.min(100, ratio * 100));
   track.classList.toggle('hidden', percent == null);
   fill.style.width = `${percent == null ? 0 : percent.toFixed(0)}%`;
 
   const details = [];
-  if (remaining != null && (budget != null || used != null)) details.push(`${t('account.quota.remaining')} ${formatCurrency(remaining) || remaining}`);
+  if (summaryText && summaryText !== statusText) details.push(summaryText);
   if (summary.quota_source_count || summary.enabled_key_count) {
     details.push(t('account.poolQuota.sources', {
       accounts: num(summary.account_count || 0),
