@@ -1,0 +1,4 @@
+services:
+  fireworks2api:
+    build: .
+    image: fireworks2api:local

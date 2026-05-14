@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="configSystem.pageTitle">配置管理</title>
+  <link rel="icon" href="/favicon.ico">
+  <link href="/static/css/app.css?v=20260507-2" rel="stylesheet">
+  <style>
+    .config-logs-toolbar { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+    .config-logs-card { overflow: hidden; }
+    .config-logs-wrap { overflow: auto; }
+    .config-logs-table { table-layout: fixed; min-width: 1320px; }
+    .config-logs-table th, .config-logs-table td { white-space: normal; vertical-align: top; }
+    .config-logs-table th:nth-child(1), .config-logs-table td:nth-child(1) { width: 12%; }
+    .config-logs-table th:nth-child(2), .config-logs-table td:nth-child(2) { width: 14%; }
+    .config-logs-table th:nth-child(3), .config-logs-table td:nth-child(3) { width: 16%; }
+    .config-logs-table th:nth-child(4), .config-logs-table td:nth-child(4) { width: 12%; }
+    .config-logs-table th:nth-child(5), .config-logs-table td:nth-child(5) { width: 8%; }
+    .config-logs-table th:nth-child(6), .config-logs-table td:nth-child(6) { width: 14%; }
+    .config-logs-table th:nth-child(7), .config-logs-table td:nth-child(7) { width: 16%; }
+    .config-logs-table th:nth-child(8), .config-logs-table td:nth-child(8) { width: 8%; }
+    .compact-json { display: inline-block; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; font-family: var(--mono-font, ui-monospace, SFMono-Regular, Consolas, monospace); font-size: 12px; color: var(--text-2); }
+  </style>
+</head>
+<body>
+  <main class="admin-main">
+    <section class="page-hd">
+      <div>
+        <div class="page-title" data-i18n="configSystem.title">配置管理</div>
+        <div class="page-sub" data-i18n="configSystem.subtitle">管理全局代理运行参数、访问控制、路由与日志开关。</div>
+      </div>
+      <div class="page-actions">
+        <div class="action-box page-action-box">
+          <button class="btn action-btn action-btn-primary" id="saveConfigTopBtn" type="button">
+            <span class="action-icon" aria-hidden="true">✓</span>
+            <span data-i18n="common.save">保存</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <form id="configForm" class="config-form-shell">
+      <section class="panel config-section">
+        <div class="panel-hd"><div><div class="panel-title" data-i18n="configSystem.cards.access.title">访问控制</div><div class="panel-sub" data-i18n="configSystem.cards.access.sub">管理员令牌、代理密钥与管理后台访问控制。</div></div></div>
+        <div class="config-grid">
+          <label class="label"><span data-i18n="configSystem.field.adminToken">管理员令牌</span><input class="input" id="adminToken" type="password" autocomplete="new-password" data-i18n-placeholder="configSystem.placeholder.keep" placeholder="留空则不修改"><small class="field-help" data-i18n="configSystem.field.adminTokenHelp">如果忘记可通过环境变量重置。</small></label>
+          <div class="proxy-keys-card">
+            <div class="proxy-keys-head">
+              <div>
+                <div class="label-title" data-i18n="configSystem.field.proxyKeys">代理密钥</div>
+                <div class="field-help" data-i18n="configSystem.field.proxyKeysHelp">点击 Key 可复制，支持随机生成或手动追加。</div>
+              </div>
+              <div class="row-actions action-box">
+                <button class="btn btn-small action-btn action-btn-primary action-btn-compact" type="button" id="generateProxyKeyBtn">
+                  <span class="action-icon" aria-hidden="true">+</span>
+                  <span data-i18n="configSystem.proxy.generate">随机生成</span>
+                </button>
+              </div>
+            </div>
+            <div class="proxy-keys-inline">
+              <input class="input" id="proxyKeyInput" type="text" data-i18n-placeholder="configSystem.proxy.manualPlaceholder" placeholder="手动输入代理密钥">
+              <div class="action-box">
+                <button class="btn btn-small action-btn action-btn-ghost action-btn-compact" type="button" id="appendProxyKeyBtn">
+                  <span class="action-icon" aria-hidden="true">+</span>
+                  <span data-i18n="configSystem.proxy.append">追加</span>
+                </button>
+              </div>
+            </div>
+            <div id="proxyKeysList" class="proxy-keys-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel config-section">
+        <div class="panel-hd"><div><div class="panel-title" data-i18n="configSystem.cards.upstream.title">上游请求</div><div class="panel-sub" data-i18n="configSystem.cards.upstream.sub">上游基础地址、请求超时与未知模型透传。</div></div></div>
+        <div class="config-grid">
+          <label class="label"><span data-i18n="configSystem.field.upstreamBaseUrl">上游基础地址</span><input class="input" id="upstreamBaseUrl" data-i18n-placeholder="configSystem.placeholder.keep" placeholder="留空则不修改"></label>
+          <label class="label"><span data-i18n="configSystem.field.requestTimeoutSeconds">请求超时（秒）</span><input class="input" id="requestTimeoutSeconds" type="number" min="1" step="1" data-i18n-placeholder="configSystem.placeholder.keep" placeholder="留空则不修改"></label>
+          <label class="label"><span data-i18n="configSystem.field.maxUpstreamAttempts">最大上游尝试次数</span><input class="input" id="maxUpstreamAttempts" type="number" min="1" step="1" data-i18n-placeholder="configSystem.placeholder.keep" placeholder="留空则不修改"></label>
+          <label class="switch-field"><span class="switch-field-label" data-i18n="configSystem.field.allowUnknownModelPassthrough">允许未知模型透传</span><label class="switch"><input type="checkbox" id="allowUnknownModelPassthrough"><span class="switch-track"><span class="switch-thumb"></span></span></label></label>
+        </div>
+      </section>
+
+      <section class="panel config-section">
+        <div class="panel-hd"><div><div class="panel-title" data-i18n="configSystem.cards.routing.title">路由与冷却</div><div class="panel-sub" data-i18n="configSystem.cards.routing.sub">冷却与故障转移相关的全局参数。</div></div></div>
+        <div class="config-grid">
+          <label class="label"><span data-i18n="configSystem.field.cooldownRateLimitSeconds">限流冷却（秒）</span><input class="input" id="cooldownRateLimitSeconds" type="number" min="0" step="1" data-i18n-placeholder="configSystem.placeholder.keep" placeholder="留空则不修改"></label>
+          <label class="label"><span data-i18n="configSystem.field.cooldown5xxSeconds">5xx 冷却（秒）</span><input class="input" id="cooldown5xxSeconds" type="number" min="0" step="1" data-i18n-placeholder="configSystem.placeholder.keep" placeholder="留空则不修改"></label>
+          <label class="label"><span data-i18n="configSystem.field.cooldownNetworkSeconds">网络错误冷却（秒）</span><input class="input" id="cooldownNetworkSeconds" type="number" min="0" step="1" data-i18n-placeholder="configSystem.placeholder.keep" placeholder="留空则不修改"></label>
+          <label class="label"><span data-i18n="configSystem.field.cooldownLongSeconds">长冷却（秒）</span><input class="input" id="cooldownLongSeconds" type="number" min="0" step="1" data-i18n-placeholder="configSystem.placeholder.keep" placeholder="留空则不修改"></label>
+        </div>
+      </section>
+
+      <section class="panel config-section">
+        <div class="panel-hd"><div><div class="panel-title" data-i18n="configSystem.cards.logging.title">日志记录</div><div class="panel-sub" data-i18n="configSystem.cards.logging.sub">请求日志保留设置。</div></div></div>
+        <div class="config-grid">
+          <label class="label"><span data-i18n="configSystem.field.requestLogRetention">请求日志保留</span><input class="input" id="requestLogRetention" data-i18n-placeholder="configSystem.placeholder.keep" placeholder="留空则不修改"></label>
+        </div>
+      </section>
+
+      <section class="panel config-section">
+        <div class="panel-hd"><div><div class="panel-title" data-i18n="configSystem.cards.diagnostics.title">诊断调试</div><div class="panel-sub" data-i18n="configSystem.cards.diagnostics.sub">用于排查 OpenAI 兼容路由到 Fireworks 上游的转换过程；首个版本仅记录安全摘要。</div></div></div>
+        <div class="config-grid">
+          <label class="switch-field"><span class="switch-field-label" data-i18n="configSystem.field.transformDebugEnabled">启用转换调试</span><label class="switch"><input type="checkbox" id="transformDebugEnabled"><span class="switch-track"><span class="switch-thumb"></span></span></label><small class="field-help" data-i18n="configSystem.field.transformDebugEnabledHelp">用于排查 OpenAI 兼容路由到 Fireworks 上游的转换；摘要模式不会记录完整 prompt / body。</small></label>
+          <label class="label"><span data-i18n="configSystem.field.transformDebugRetention">转换调试保留</span><input class="input" id="transformDebugRetention" type="number" min="1" step="1" data-i18n-placeholder="configSystem.placeholder.keep" placeholder="留空则不修改"></label>
+          <label class="label"><span data-i18n="configSystem.field.transformDebugLevel">记录级别</span>
+            <select class="input" id="transformDebugLevel">
+              <option value="" data-i18n="configSystem.placeholder.keep">留空则不修改</option>
+              <option value="summary" data-i18n="configSystem.transformDebugLevel.summary">摘要（安全）</option>
+              <option value="redacted_preview" data-i18n="configSystem.transformDebugLevel.redactedPreview">脱敏预览</option>
+            </select>
+            <small class="field-help" data-i18n="configSystem.field.transformDebugLevelHelp">首个版本仅建议使用摘要模式；脱敏预览也不会显示完整正文。</small>
+          </label>
+        </div>
+      </section>
+    </form>
+
+    <section class="panel config-section config-logs-card" id="transformDebugLogsPanel">
+      <div class="panel-hd">
+        <div>
+          <div class="panel-title" data-i18n="configSystem.logs.title">转换调试日志</div>
+          <div class="panel-sub" data-i18n="configSystem.logs.sub">仅展示字段名、变化摘要与警告，不显示完整请求体。</div>
+        </div>
+        <div class="config-logs-toolbar action-box">
+          <button class="btn action-btn action-btn-ghost" id="refreshTransformDebugLogsBtn" type="button">
+            <span class="action-icon" aria-hidden="true">↺</span>
+            <span data-i18n="configSystem.logs.refresh">刷新日志</span>
+          </button>
+          <button class="btn action-btn action-btn-danger" id="clearTransformDebugLogsBtn" type="button">
+            <span class="action-icon" aria-hidden="true">×</span>
+            <span data-i18n="configSystem.logs.clear">清空日志</span>
+          </button>
+        </div>
+      </div>
+      <div class="config-logs-wrap table-card">
+        <table class="config-logs-table">
+          <thead>
+            <tr>
+              <th data-i18n="configSystem.logs.table.time">时间</th>
+              <th data-i18n="configSystem.logs.table.endpoint">端点</th>
+              <th data-i18n="configSystem.logs.table.upstream">上游</th>
+              <th data-i18n="configSystem.logs.table.model">模型</th>
+              <th data-i18n="configSystem.logs.table.status">状态</th>
+              <th data-i18n="configSystem.logs.table.fields">字段</th>
+              <th data-i18n="configSystem.logs.table.changes">变化</th>
+              <th data-i18n="configSystem.logs.table.warnings">警告</th>
+            </tr>
+          </thead>
+          <tbody id="transformDebugLogsTbody">
+            <tr><td class="empty" colspan="8" data-i18n="configSystem.logs.loading">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/js/i18n.js?v=20260506-3"></script>
+  <script src="/static/js/auth.js?v=20260506-3"></script>
+  <script src="/static/js/admin-header.js?v=20260506-3"></script>
+  <script src="/static/js/toast.js?v=20260506-3"></script>
+  <script src="/static/js/config-system.js?v=20260506-3"></script>
+</body>
+</html>

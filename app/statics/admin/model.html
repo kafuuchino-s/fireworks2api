@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="model.pageTitle">模型管理</title>
+  <link rel="icon" href="/favicon.ico">
+  <link href="/static/css/app.css?v=20260507-2" rel="stylesheet">
+</head>
+<body class="model-page">
+  <main class="admin-main">
+    <section class="page-hd">
+      <div>
+        <div class="page-title" data-i18n="model.title">模型管理</div>
+      </div>
+    </section>
+
+    <section class="panel model-main-panel" style="margin-bottom:14px">
+      <div class="panel-hd">
+        <div>
+          <div class="panel-title" data-i18n="model.modelList">模型映射</div>
+          <div class="panel-sub" data-i18n="model.listSubtitle">别名、上游模型、启用状态可直接编辑。</div>
+        </div>
+        <div class="action-box page-action-box">
+          <button class="btn action-btn action-btn-primary" id="manualAddModelBtnTop" type="button">
+            <span class="action-icon" aria-hidden="true">+</span>
+            <span data-i18n="model.import.manualAlias">手动别名映射</span>
+          </button>
+        </div>
+      </div>
+      <div class="table-card">
+        <table class="model-table">
+          <thead>
+            <tr>
+              <th data-i18n="model.model">模型</th>
+              <th data-i18n="model.metadata">Metadata</th>
+              <th data-i18n="model.enabled">启用</th>
+              <th data-i18n="model.actions">操作</th>
+            </tr>
+          </thead>
+          <tbody id="modelsTbody">
+            <tr><td colspan="4" class="empty" data-i18n="model.loading">加载中</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel model-import-panel" id="importPanel" style="margin-bottom:14px"></section>
+  </main>
+
+  <div id="modelModal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal">
+      <div class="modal-hd">
+        <div>
+          <div id="modelModalTitle" class="modal-title" data-i18n="model.addModel">添加模型</div>
+          <div class="modal-sub" data-i18n="model.modalSubtitle">创建手动别名映射</div>
+        </div>
+        <button class="btn btn-ghost btn-small" id="closeModalBtn" data-i18n="model.cancel">取消</button>
+      </div>
+      <form id="modelForm" class="form-grid">
+        <input type="hidden" id="modelId">
+        <label class="label"><span data-i18n="model.alias">别名</span><input class="input" id="alias" required></label>
+        <label class="label"><span data-i18n="model.upstreamModel">上游模型 / Router ID</span><input class="input" id="upstream_model" required></label>
+        <input type="checkbox" id="enabled" checked hidden>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" id="cancelModalBtn" data-i18n="model.cancel">取消</button>
+          <button type="submit" class="btn btn-primary" data-i18n="model.save">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/static/js/i18n.js?v=20260507-1"></script>
+  <script src="/static/js/auth.js?v=20260506-3"></script>
+  <script src="/static/js/admin-header.js?v=20260506-3"></script>
+  <script src="/static/js/toast.js?v=20260506-3"></script>
+  <script src="/static/js/config.js?v=20260507-1"></script>
+</body>
+</html>

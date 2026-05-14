@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="cache.pageTitle">fireworks2api - 缓存统计</title>
+  <link rel="icon" href="/favicon.ico?v=20260506-3">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
+  <link href="/static/css/app.css?v=20260507-2" rel="stylesheet">
+  <style>
+    .request-log-panel .panel-hd { align-items: flex-start; }
+    .request-log-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+    .request-log-toolbar { display: grid; gap: 12px; }
+    .request-log-filters { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; align-items: end; }
+    .stat-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+    .stat-cell { min-height: 92px; }
+    .token-group { display: flex; gap: 6px; flex-wrap: wrap; }
+    .token-pill { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; background: var(--soft-2); color: #4b463e; font-size: 11px; font-weight: 700; }
+    .table-wrap { overflow: auto; }
+    .analysis-table-card { overflow: hidden; }
+    .analysis-table { table-layout: fixed; }
+    .analysis-table th, .analysis-table td { white-space: normal; }
+    .analysis-table th:nth-child(1), .analysis-table td:nth-child(1) { width: 28%; }
+    .analysis-table th:nth-child(2), .analysis-table td:nth-child(2) { width: 15%; }
+    .analysis-table th:nth-child(3), .analysis-table td:nth-child(3) { width: 16%; }
+    .analysis-table th:nth-child(4), .analysis-table td:nth-child(4) { width: 16%; }
+    .analysis-table th:nth-child(5), .analysis-table td:nth-child(5) { width: 25%; }
+    .requests-table { min-width: 1280px; }
+    .time-cell { white-space: nowrap; }
+    .error-text { color: var(--error); max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+    .ok-text { color: var(--success); }
+    @media (max-width: 1100px) {
+      .request-log-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 680px) {
+      .request-log-filters { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div id="admin-header" data-active="/admin/cache"></div>
+  <main class="admin-main">
+    <section class="page-hd">
+      <div>
+        <h1 class="page-title" data-i18n="cache.title">缓存统计</h1>
+        <p class="page-sub" data-i18n="cache.subtitle">基于缓存命中与请求日志的观测页面。</p>
+      </div>
+      <div class="action-box page-action-box">
+        <button class="btn action-btn action-btn-primary" id="refresh-btn" type="button"><span class="action-icon" aria-hidden="true">↺</span><span data-i18n="cache.refresh">刷新</span></button>
+      </div>
+    </section>
+
+    <section class="stat-grid" id="stats"></section>
+
+    <section id="analysis-panels" class="analysis-grid"></section>
+
+    <section class="panel request-log-panel">
+      <div class="panel-hd">
+        <div>
+          <div class="panel-title" data-i18n="cache.requests">请求日志</div>
+          <div class="panel-sub" id="table-sub" data-i18n="cache.requestsSub">最近请求记录</div>
+        </div>
+        <div class="request-log-meta">
+          <div class="badge" id="rows-badge" data-i18n="cache.rowsBadge">0 条</div>
+          <div class="request-log-actions action-box request-log-action-box">
+            <button class="btn action-btn action-btn-primary" id="refresh-logs-btn" type="button"><span class="action-icon" aria-hidden="true">↺</span><span data-i18n="cache.refreshLogs">刷新日志</span></button>
+            <div class="auto-refresh-control"><span class="action-icon" aria-hidden="true">•</span><span data-i18n="cache.autoRefresh">自动刷新</span><label class="switch"><input type="checkbox" id="auto-refresh"><span class="switch-track"><span class="switch-thumb"></span></span></label></div>
+          </div>
+        </div>
+      </div>
+      <div class="request-log-toolbar">
+        <div class="request-log-filters">
+          <label class="label"><span data-i18n="cache.filter.limit">条数</span><input class="input" id="limit" type="number" min="1" max="500" value="50" placeholder="请输入条数" data-i18n-placeholder="cache.filter.limitPlaceholder"></label>
+          <label class="label"><span data-i18n="cache.filter.modelAlias">模型别名</span><input class="input" id="model_alias" type="text" placeholder="请输入模型别名" data-i18n-placeholder="cache.filter.modelAliasPlaceholder"></label>
+          <label class="label"><span data-i18n="cache.filter.keyFingerprint">Fireworks Key</span><input class="input mono" id="key_fingerprint" type="text" placeholder="请输入 Key" data-i18n-placeholder="cache.filter.keyFingerprintPlaceholder"></label>
+          <label class="label"><span data-i18n="cache.filter.errorType">错误类型</span><input class="input" id="error_type" type="text" placeholder="请输入错误类型" data-i18n-placeholder="cache.filter.errorTypePlaceholder"></label>
+          <label class="label"><span data-i18n="cache.filter.statusCode">状态码</span><input class="input" id="status_code" type="text" placeholder="请输入状态码" data-i18n-placeholder="cache.filter.statusCodePlaceholder"></label>
+        </div>
+        <div class="request-filter-actions action-box request-filter-action-box">
+          <button class="btn action-btn action-btn-primary" id="apply-btn" type="button"><span class="action-icon" aria-hidden="true">✓</span><span data-i18n="cache.apply">应用筛选</span></button>
+          <button class="btn action-btn action-btn-ghost" id="reset-btn" type="button"><span class="action-icon" aria-hidden="true">×</span><span data-i18n="cache.reset">重置</span></button>
+        </div>
+      </div>
+      <div class="table-card table-wrap">
+        <table class="requests-table">
+          <thead>
+            <tr>
+              <th data-i18n="cache.table.time">时间</th><th data-i18n="cache.table.endpoint">端点</th><th data-i18n="cache.table.model">模型</th><th data-i18n="cache.table.keyFingerprint">Key</th><th data-i18n="cache.table.tokens">令牌</th><th data-i18n="cache.table.hitRatio">命中率</th><th data-i18n="cache.table.latency">延迟</th><th data-i18n="cache.table.status">状态</th><th data-i18n="cache.table.error">错误</th><th data-i18n="cache.table.requestId">上游请求 ID</th>
+            </tr>
+          </thead>
+          <tbody id="request-rows">
+            <tr><td class="empty" colspan="10" data-i18n="cache.loading">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/js/i18n.js?v=20260506-3"></script>
+  <script src="/static/js/toast.js?v=20260506-3"></script>
+  <script src="/static/js/auth.js?v=20260506-3"></script>
+  <script src="/static/js/admin-header.js?v=20260506-3"></script>
+  <script src="/static/js/cache.js?v=20260506-3"></script>
+  <script>
+    (async () => {
+      await requireAdminToken();
+      renderAdminHeader('/admin/cache');
+      initCachePage();
+    })().catch(err => showToast(err.message || t('common.loadingFailed'), 'error'));
+  </script>
+</body>
+</html>

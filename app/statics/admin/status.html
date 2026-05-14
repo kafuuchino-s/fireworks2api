@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="status.pageTitle">fireworks2api - 运行状态</title>
+  <link rel="icon" href="/favicon.ico">
+  <link href="/static/css/app.css?v=20260507-2" rel="stylesheet">
+</head>
+<body>
+  <main class="admin-main">
+    <section class="page-hd">
+      <div>
+        <h1 class="page-title" data-i18n="status.title">运行状态</h1>
+        <p class="page-sub" data-i18n="status.subtitle">面向日常值守的只读运行状态，不展示或修改任何敏感配置。</p>
+        <div class="status-page-meta" aria-live="polite">
+          <span class="badge badge-dark" data-i18n="status.readOnly">只读状态页</span>
+          <span class="status-updated" id="status-last-updated" data-i18n="status.notLoaded">尚未加载</span>
+        </div>
+      </div>
+      <div class="page-actions">
+        <div class="action-box page-action-box">
+          <button class="btn action-btn action-btn-primary" id="refresh-btn">
+            <span class="action-icon" aria-hidden="true">↺</span>
+            <span data-i18n="common.refresh">刷新</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section class="status-summary" aria-labelledby="status-summary-title">
+      <div class="status-section-head">
+        <div>
+          <div class="panel-title" id="status-summary-title" data-i18n="status.summary.title">概览</div>
+          <div class="panel-sub" data-i18n="status.summary.sub">服务状态、Fireworks 密钥、请求量与缓存/费用一屏掌握。</div>
+        </div>
+      </div>
+      <div class="status-summary-grid" id="status-cards"></div>
+    </section>
+
+    <section class="status-panels" id="status-panels"></section>
+  </main>
+
+  <script src="/static/js/i18n.js?v=20260507-4"></script>
+  <script src="/static/js/auth.js?v=20260506-3"></script>
+  <script src="/static/js/admin-header.js?v=20260506-3"></script>
+  <script src="/static/js/toast.js?v=20260506-3"></script>
+  <script src="/static/js/status.js?v=20260507-2"></script>
+  <script>
+    (async () => {
+      try { await requireAdminToken(); renderAdminHeader('/admin/status'); applyI18n(document); initStatusPage(); }
+      catch (err) { console.error(err); }
+    })();
+  </script>
+</body>
+</html>

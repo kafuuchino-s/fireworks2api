@@ -1,0 +1,33 @@
+[project]
+name = "fireworks2api"
+version = "0.1.0"
+description = "Fireworks API proxy with sticky key routing and OpenAI-compatible endpoints"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0",
+  "httpx>=0.27.0",
+  "pydantic>=2.8.0",
+  "pydantic-settings>=2.4.0",
+  "uvicorn[standard]>=0.30.0",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.3.0",
+  "pytest-asyncio>=0.24.0",
+  "respx>=0.21.1",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["data*", "tests*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

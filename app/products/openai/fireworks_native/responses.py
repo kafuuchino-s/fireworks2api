@@ -1,0 +1,453 @@
+from __future__ import annotations
+
+from typing import Any
+
+from app.dataplane.fireworks.contracts import OPENAI_TO_FIREWORKS_RESPONSES_FIELDS
+from app.dataplane.fireworks.paths import resolve_inference_path
+from app.products.openai.contracts import OPENAI_NOT_RESPONSES
+from app.products.openai.errors import raise_openai_error
+from app.dataplane.fireworks.contracts import FIREWORKS_RESPONSES_SUPPORTED_FIELDS
+
+from .common import RESPONSES_PUBLIC_FIELDS, _copy_allowed, _require_present, _validate_bool, _validate_float_range, _validate_int_range, _validate_object, _reject_unknown_or_unsupported
+from .common import build_adapter_headers
+
+
+_RESPONSES_TOOL_TYPES = {"function", "mcp", "sse", "python", "web_search"}
+_RESPONSES_INPUT_PART_TYPES = {"text", "input_text", "output_text", "input_image", "image"}
+_RESPONSES_OUTPUT_ITEM_TYPES = {"tool_output", "function_call"}
+_OPENAI_RESPONSES_ACCEPT_DROP_FIELDS = {"stream_options"}
+
+
+def _is_nonempty_str(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _normalize_responses_input_part(part: dict[str, Any]) -> dict[str, Any]:
+    part_type = part.get("type")
+    if part_type == "output_text":
+        return {"type": "input_text", "text": part["text"]}
+    if part_type == "input_image":
+        image = part.get("image_url") or {}
+        if isinstance(image, str):
+            normalized_image = {"url": image}
+        else:
+            normalized_image = {"url": image["url"]}
+            if "detail" in image:
+                normalized_image["detail"] = image["detail"]
+        return {"type": "image", "image_url": normalized_image}
+    if part_type == "image":
+        image = part.get("image_url") or part.get("image") or part.get("source") or {}
+        if isinstance(image, str):
+            normalized_image = {"url": image}
+        else:
+            normalized_image = {"url": image["url"]}
+            if "detail" in image:
+                normalized_image["detail"] = image["detail"]
+        return {"type": "image", "image_url": normalized_image}
+    return part
+
+
+def _normalize_responses_input_item(item: dict[str, Any]) -> dict[str, Any]:
+    if item.get("type") == "output_text":
+        return {"role": "assistant", "content": [{"type": "input_text", "text": item["text"]}]}
+    if item.get("type") == "function_call_output":
+        return item
+    if item.get("type") == "function_call":
+        return item
+    if item.get("type") == "message":
+        item = {key: value for key, value in item.items() if key != "type"}
+    content = item.get("content")
+    if isinstance(content, list):
+        normalized_content = []
+        changed = False
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in {"input_image", "image", "output_text"}:
+                normalized_content.append(_normalize_responses_input_part(part))
+                changed = True
+            else:
+                normalized_content.append(part)
+        if changed:
+            item = dict(item)
+            item["content"] = normalized_content
+    return item
+
+
+def _normalize_previous_response_tool_replay(input_items: Any, previous_response_id: Any) -> Any:
+    if not isinstance(previous_response_id, str) or not isinstance(input_items, list):
+        return input_items
+    normalized: list[Any] = []
+    index = 0
+    while index < len(input_items):
+        current = input_items[index]
+        next_item = input_items[index + 1] if index + 1 < len(input_items) else None
+        if (
+            isinstance(current, dict)
+            and isinstance(next_item, dict)
+            and current.get("type") == "function_call"
+            and next_item.get("type") == "function_call_output"
+            and current.get("call_id") == next_item.get("call_id")
+        ):
+            normalized.append(next_item)
+            index += 2
+            continue
+        normalized.append(current)
+        index += 1
+    return normalized
+
+
+def _normalize_responses_tool_choice(tool_choice: Any) -> Any:
+    if not isinstance(tool_choice, dict):
+        return tool_choice
+    if tool_choice.get("type") == "function" and isinstance(tool_choice.get("name"), str) and tool_choice["name"].strip() and "function" not in tool_choice:
+        return {"type": "function", "function": {"name": tool_choice["name"].strip()}}
+    return tool_choice
+
+
+def _is_sub2api_bridge_shape(body: dict[str, Any]) -> bool:
+    include = body.get("include")
+    if isinstance(include, list) and "reasoning.encrypted_content" in include:
+        return True
+    text = body.get("text")
+    if isinstance(text, dict) and text.get("verbosity") == "medium" and body.get("parallel_tool_calls") is True:
+        return True
+    return False
+
+
+def _responses_stream_needs_continuation_storage(body: dict[str, Any]) -> bool:
+    if body.get("stream") is not True:
+        return False
+    if _is_sub2api_bridge_shape(body):
+        return True
+    if isinstance(body.get("previous_response_id"), str):
+        return True
+    tools = body.get("tools")
+    if isinstance(tools, list) and tools:
+        return True
+    input_items = body.get("input")
+    if isinstance(input_items, list):
+        return any(isinstance(item, dict) and item.get("type") in {"function_call", "function_call_output"} for item in input_items)
+    return False
+
+
+def _validate_responses_input_part(part: Any, *, item_index: int, part_index: int) -> None:
+    if not isinstance(part, dict) or not part:
+        raise_openai_error("input content parts must be objects", param=f"input[{item_index}].content[{part_index}]", code="invalid_request_error")
+    part_type = part.get("type")
+    if not _is_nonempty_str(part_type):
+        raise_openai_error("input content parts must include 'type'", param=f"input[{item_index}].content[{part_index}].type", code="invalid_request_error")
+    if part_type not in _RESPONSES_INPUT_PART_TYPES:
+        raise_openai_error(f"unsupported input content part type '{part_type}'", param=f"input[{item_index}].content[{part_index}].type", code="unsupported_parameter")
+    if part_type in {"text", "input_text", "output_text"}:
+        if not _is_nonempty_str(part.get("text")):
+            raise_openai_error("text input parts require text", param=f"input[{item_index}].content[{part_index}].text", code="invalid_request_error")
+        return
+    image = part.get("image_url") or part.get("image") or part.get("source")
+    if isinstance(image, str):
+        url = image
+    elif isinstance(image, dict) and image:
+        url = image.get("url")
+    else:
+        raise_openai_error("input_image parts require image_url.url", param=f"input[{item_index}].content[{part_index}].image_url.url", code="invalid_request_error")
+    if not _is_nonempty_str(url):
+        raise_openai_error("input_image parts require image_url.url", param=f"input[{item_index}].content[{part_index}].image_url.url", code="invalid_request_error")
+    if not (url.startswith("https://") or url.startswith("data:image/")):
+        raise_openai_error("input_image parts require https:// or data:image/ URLs", param=f"input[{item_index}].content[{part_index}].image_url.url", code="invalid_request_error")
+    if url.startswith("data:image/") and ";base64," not in url:
+        raise_openai_error("input_image data URLs must be base64-encoded", param=f"input[{item_index}].content[{part_index}].image_url.url", code="invalid_request_error")
+    if isinstance(image, dict):
+        for key in image:
+            if key not in {"url", "detail"}:
+                raise_openai_error(f"unsupported input_image field '{key}'", param=f"input[{item_index}].content[{part_index}].image_url.{key}", code="unsupported_parameter")
+        if "detail" in image and not _is_nonempty_str(image["detail"]):
+            raise_openai_error("input_image.detail must be a string", param=f"input[{item_index}].content[{part_index}].image_url.detail", code="invalid_request_error")
+
+
+def _validate_responses_input_message(message: Any, *, index: int) -> None:
+    if not isinstance(message, dict) or not message:
+        raise_openai_error("input list items must be message objects", param=f"input[{index}]", code="invalid_request_error")
+    item_type = message.get("type")
+    if item_type is not None:
+        if item_type == "message":
+            pass
+        elif item_type == "output_text":
+            if not _is_nonempty_str(message.get("text")):
+                raise_openai_error("output_text items require text", param=f"input[{index}].text", code="invalid_request_error")
+            return
+        elif item_type == "function_call_output":
+            if not _is_nonempty_str(message.get("call_id")):
+                raise_openai_error("function_call_output items require call_id", param=f"input[{index}].call_id", code="invalid_request_error")
+            if "output" not in message:
+                raise_openai_error("function_call_output items require output", param=f"input[{index}].output", code="invalid_request_error")
+            return
+        elif item_type == "function_call":
+            if not _is_nonempty_str(message.get("call_id")):
+                raise_openai_error("function_call items require call_id", param=f"input[{index}].call_id", code="invalid_request_error")
+            if not _is_nonempty_str(message.get("name")):
+                raise_openai_error("function_call items require name", param=f"input[{index}].name", code="invalid_request_error")
+            if "arguments" in message and not isinstance(message["arguments"], str):
+                raise_openai_error("function_call.arguments must be a string", param=f"input[{index}].arguments", code="invalid_request_error")
+            return
+        elif item_type not in _RESPONSES_OUTPUT_ITEM_TYPES:
+            raise_openai_error(f"unsupported input item type '{item_type}'", param=f"input[{index}].type", code="unsupported_parameter")
+        else:
+            if not _is_nonempty_str(message.get("tool_call_id")):
+                raise_openai_error("tool_output items require tool_call_id", param=f"input[{index}].tool_call_id", code="invalid_request_error")
+            if "output" not in message:
+                raise_openai_error("tool_output items require output", param=f"input[{index}].output", code="invalid_request_error")
+            return
+    role = message.get("role")
+    if not _is_nonempty_str(role):
+        raise_openai_error("message objects require role", param=f"input[{index}].role", code="invalid_request_error")
+    content = message.get("content")
+    if isinstance(content, str):
+        if not content:
+            raise_openai_error("message content must not be empty", param=f"input[{index}].content", code="invalid_request_error")
+        return
+    if isinstance(content, list):
+        if not content:
+            raise_openai_error("message content must not be empty", param=f"input[{index}].content", code="invalid_request_error")
+        for part_index, part in enumerate(content):
+            _validate_responses_input_part(part, item_index=index, part_index=part_index)
+        return
+    raise_openai_error("message content must be a string or list of parts", param=f"input[{index}].content", code="invalid_request_error")
+
+
+def _validate_responses_input(value: Any) -> None:
+    if isinstance(value, str):
+        if not value:
+            raise_openai_error("'input' must not be empty", param="input", code="invalid_request_error")
+        return
+    if isinstance(value, list):
+        if not value:
+            raise_openai_error("'input' must not be empty", param="input", code="invalid_request_error")
+        for index, item in enumerate(value):
+            _validate_responses_input_message(item, index=index)
+        return
+    raise_openai_error("'input' must be a string or non-empty list of objects/messages", param="input", code="invalid_request_error")
+
+
+def _validate_responses_tool(tool: Any, *, index: int) -> None:
+    if not isinstance(tool, dict) or not tool:
+        raise_openai_error("tool object must include 'type'", param=f"tools[{index}].type", code="invalid_request_error")
+    tool_type = tool.get("type")
+    if not isinstance(tool_type, str) or not tool_type:
+        raise_openai_error("tool object must include 'type'", param=f"tools[{index}].type", code="invalid_request_error")
+    if tool_type not in _RESPONSES_TOOL_TYPES:
+        raise_openai_error(f"unsupported tool type '{tool_type}'", param=f"tools[{index}].type", code="unsupported_parameter")
+    if tool_type == "function":
+        function = tool.get("function")
+        if isinstance(function, dict):
+            if not isinstance(function.get("name"), str) or not function.get("name"):
+                raise_openai_error("function tools require function.name", param=f"tools[{index}].function.name", code="invalid_request_error")
+            allowed_function_keys = {"name", "description", "parameters", "schema", "strict"}
+            for key in function:
+                if key not in allowed_function_keys:
+                    raise_openai_error(f"unsupported function tool field '{key}'", param=f"tools[{index}].function.{key}", code="unsupported_parameter")
+        else:
+            allowed_flat_keys = {"type", "name", "description", "parameters", "strict"}
+            for key in tool:
+                if key not in allowed_flat_keys:
+                    raise_openai_error(f"unsupported function tool field '{key}'", param=f"tools[{index}].{key}", code="unsupported_parameter")
+            if not _is_nonempty_str(tool.get("name")):
+                raise_openai_error("function tools require name", param=f"tools[{index}].name", code="invalid_request_error")
+            if "parameters" in tool and not isinstance(tool["parameters"], dict):
+                raise_openai_error("function.parameters must be an object", param=f"tools[{index}].parameters", code="invalid_request_error")
+            if "description" in tool and tool["description"] is not None and not isinstance(tool["description"], str):
+                raise_openai_error("function.description must be a string", param=f"tools[{index}].description", code="invalid_request_error")
+            if "strict" in tool and not isinstance(tool["strict"], bool):
+                raise_openai_error("function.strict must be a boolean", param=f"tools[{index}].strict", code="invalid_request_error")
+    elif tool_type == "mcp":
+        allowed_mcp_keys = {"type", "server_url", "url", "label", "name", "server_label", "server_description", "allowed_tools", "headers", "require_approval"}
+        for key in tool:
+            if key not in allowed_mcp_keys:
+                raise_openai_error(f"unsupported mcp tool field '{key}'", param=f"tools[{index}].{key}", code="unsupported_parameter")
+        server_url = tool.get("server_url", tool.get("url"))
+        if not isinstance(server_url, str) or not server_url.strip():
+            raise_openai_error("mcp tools require server_url", param=f"tools[{index}].server_url", code="invalid_request_error")
+        if "url" in tool:
+            if not isinstance(tool["url"], str) or not tool["url"].strip():
+                raise_openai_error("mcp tools require url to be a non-empty string when provided", param=f"tools[{index}].url", code="invalid_request_error")
+        for key in ("server_url", "url", "label", "name", "server_label", "server_description"):
+            if key in tool and (not isinstance(tool[key], str) or not tool[key].strip()):
+                raise_openai_error(f"mcp tools require {key} to be a non-empty string when provided", param=f"tools[{index}].{key}", code="invalid_request_error")
+        if "allowed_tools" in tool:
+            if not isinstance(tool["allowed_tools"], list) or not tool["allowed_tools"]:
+                raise_openai_error("mcp.allowed_tools must be a non-empty list", param=f"tools[{index}].allowed_tools", code="invalid_request_error")
+            for allowed_index, allowed_tool in enumerate(tool["allowed_tools"]):
+                if not isinstance(allowed_tool, str) or not allowed_tool.strip():
+                    raise_openai_error("mcp.allowed_tools entries must be non-empty strings", param=f"tools[{index}].allowed_tools[{allowed_index}]", code="invalid_request_error")
+        if "headers" in tool:
+            headers = tool["headers"]
+            if not isinstance(headers, dict) or not headers:
+                raise_openai_error("mcp.headers must be an object", param=f"tools[{index}].headers", code="invalid_request_error")
+            for header_name, header_value in headers.items():
+                if not isinstance(header_name, str) or not header_name.strip():
+                    raise_openai_error("mcp.headers keys must be non-empty strings", param=f"tools[{index}].headers", code="invalid_request_error")
+                if not isinstance(header_value, str):
+                    raise_openai_error("mcp.headers values must be strings", param=f"tools[{index}].headers.{header_name}", code="invalid_request_error")
+        if "require_approval" in tool and not isinstance(tool["require_approval"], (bool, str, dict)):
+            raise_openai_error("mcp.require_approval must be a boolean, string, or object", param=f"tools[{index}].require_approval", code="invalid_request_error")
+    elif tool_type == "sse":
+        server_url = tool.get("server_url", tool.get("url"))
+        if not isinstance(server_url, str) or not server_url.strip():
+            raise_openai_error("sse tools require server_url", param=f"tools[{index}].server_url", code="invalid_request_error")
+        if "server_url" in tool and tool["server_url"] != server_url:
+            raise_openai_error("sse tools require server_url", param=f"tools[{index}].server_url", code="invalid_request_error")
+    elif tool_type == "python":
+        if "name" in tool and (not isinstance(tool["name"], str) or not tool["name"].strip()):
+            raise_openai_error("python tools require name to be a non-empty string when provided", param=f"tools[{index}].name", code="invalid_request_error")
+    elif tool_type == "web_search":
+        allowed_web_search_keys = {"type", "search_context_size", "user_location", "filters"}
+        for key in tool:
+            if key not in allowed_web_search_keys:
+                raise_openai_error(f"unsupported web_search tool field '{key}'", param=f"tools[{index}].{key}", code="unsupported_parameter")
+        if "search_context_size" in tool and tool["search_context_size"] not in {"low", "medium", "high"}:
+            raise_openai_error("web_search.search_context_size must be low, medium, or high", param=f"tools[{index}].search_context_size", code="invalid_request_error")
+
+
+def validate_responses_body(body: dict[str, Any]) -> None:
+    _require_present(body, "model")
+    _validate_responses_input(_require_present(body, "input"))
+    if "previous_response_id" in body and not isinstance(body["previous_response_id"], str):
+        raise_openai_error("'previous_response_id' must be a string", param="previous_response_id", code="invalid_request_error")
+    if "previous_response_id" in body and not body["previous_response_id"].strip():
+        raise_openai_error("'previous_response_id' must not be empty", param="previous_response_id", code="invalid_request_error")
+    if "user" in body and not isinstance(body["user"], str):
+        raise_openai_error("'user' must be a string", param="user", code="invalid_request_error")
+    if "input" in body and isinstance(body["input"], list):
+        for index, item in enumerate(body["input"]):
+            if not isinstance(item, dict) or not item:
+                raise_openai_error("input list items must be objects", param=f"input[{index}]", code="invalid_request_error")
+            item_type = item.get("type")
+            if item_type is None:
+                continue
+            if item_type == "message":
+                continue
+            if item_type == "output_text":
+                if not _is_nonempty_str(item.get("text")):
+                    raise_openai_error("output_text items require text", param=f"input[{index}].text", code="invalid_request_error")
+                continue
+            if item_type == "function_call_output":
+                if not _is_nonempty_str(item.get("call_id")):
+                    raise_openai_error("function_call_output items require call_id", param=f"input[{index}].call_id", code="invalid_request_error")
+                if "output" not in item:
+                    raise_openai_error("function_call_output items require output", param=f"input[{index}].output", code="invalid_request_error")
+                continue
+            if item_type == "function_call":
+                if not _is_nonempty_str(item.get("call_id")):
+                    raise_openai_error("function_call items require call_id", param=f"input[{index}].call_id", code="invalid_request_error")
+                if not _is_nonempty_str(item.get("name")):
+                    raise_openai_error("function_call items require name", param=f"input[{index}].name", code="invalid_request_error")
+                if "arguments" in item and not isinstance(item["arguments"], str):
+                    raise_openai_error("function_call.arguments must be a string", param=f"input[{index}].arguments", code="invalid_request_error")
+                continue
+            if item_type not in _RESPONSES_OUTPUT_ITEM_TYPES:
+                raise_openai_error(f"unsupported input item type '{item_type}'", param=f"input[{index}].type", code="unsupported_parameter")
+            if not _is_nonempty_str(item.get("tool_call_id")):
+                raise_openai_error("tool_output items require tool_call_id", param=f"input[{index}].tool_call_id", code="invalid_request_error")
+            if "output" not in item:
+                raise_openai_error("tool_output items require output", param=f"input[{index}].output", code="invalid_request_error")
+    _validate_int_range(body, "max_output_tokens", positive=True)
+    _validate_int_range(body, "max_tokens", positive=True)
+    _validate_int_range(body, "max_tool_calls", positive=True)
+    _validate_float_range(body, "temperature", min_value=0, max_value=2)
+    _validate_float_range(body, "top_p", min_value=0, max_value=1)
+    _validate_bool(body, "stream")
+    _validate_bool(body, "parallel_tool_calls")
+    _validate_bool(body, "store")
+    if "tools" in body:
+        if not isinstance(body["tools"], list):
+            raise_openai_error("'tools' must be a list", param="tools", code="invalid_request_error")
+        for index, tool in enumerate(body["tools"]):
+            _validate_responses_tool(tool, index=index)
+    if "tool_choice" in body:
+        tool_choice = body["tool_choice"]
+        if isinstance(tool_choice, str):
+            if not tool_choice.strip():
+                raise_openai_error("'tool_choice' must not be empty", param="tool_choice", code="invalid_request_error")
+        elif isinstance(tool_choice, dict):
+            if "type" in tool_choice and not isinstance(tool_choice["type"], str):
+                raise_openai_error("'tool_choice.type' must be a string", param="tool_choice.type", code="invalid_request_error")
+        else:
+            raise_openai_error("'tool_choice' must be a string or object", param="tool_choice", code="invalid_request_error")
+    _validate_object(body, "text")
+    _validate_object(body, "reasoning")
+    _validate_object(body, "metadata")
+    _validate_object(body, "stream_options")
+    if "max_tokens" in body:
+        if "max_output_tokens" in body:
+            raise_openai_error("'max_output_tokens' and 'max_tokens' are mutually exclusive", param="max_tokens", code="unsupported_parameter")
+    if "service_tier" in body:
+        raise_openai_error("service_tier is not supported for responses", param="service_tier", code="unsupported_parameter")
+    unknown = sorted(set(body) - (RESPONSES_PUBLIC_FIELDS | {"model"}))
+    for field in unknown:
+        _reject_unknown_or_unsupported(field, public_fields=RESPONSES_PUBLIC_FIELDS, unsupported_fields=OPENAI_NOT_RESPONSES)
+    for field in sorted((set(body) & RESPONSES_PUBLIC_FIELDS) - FIREWORKS_RESPONSES_SUPPORTED_FIELDS - set(OPENAI_TO_FIREWORKS_RESPONSES_FIELDS) - _OPENAI_RESPONSES_ACCEPT_DROP_FIELDS):
+        if field in {"model", "max_tokens"}:
+            continue
+        _reject_unknown_or_unsupported(field, public_fields=RESPONSES_PUBLIC_FIELDS, unsupported_fields=OPENAI_NOT_RESPONSES)
+
+
+def build_responses_adapter(context) -> tuple[dict[str, Any], dict[str, str], dict[str, Any]]:
+    body = context.body
+    validate_responses_body(body)
+    payload = _copy_allowed(body, FIREWORKS_RESPONSES_SUPPORTED_FIELDS)
+    if isinstance(payload.get("input"), list):
+        payload["input"] = [
+            _normalize_responses_input_item(item) if isinstance(item, dict) else item
+            for item in payload["input"]
+        ]
+        normalized_replay = _normalize_previous_response_tool_replay(payload["input"], body.get("previous_response_id"))
+        if normalized_replay != payload["input"]:
+            payload["input"] = normalized_replay
+    field_changes: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    tools = body.get("tools")
+    if isinstance(tools, list):
+        for index, tool in enumerate(tools):
+            if isinstance(tool, dict) and tool.get("type") == "function" and isinstance(tool.get("function"), dict):
+                warnings.append("nested function tool shape is accepted for compatibility; flat function tools are preferred")
+                break
+            if isinstance(tool, dict) and tool.get("type") == "mcp":
+                allowed_mcp_keys = {"type", "server_url", "url", "label", "name", "server_label", "server_description", "allowed_tools", "headers", "require_approval"}
+                extras = sorted(set(tool) - allowed_mcp_keys)
+                if extras:
+                    raise_openai_error(f"unsupported mcp tool field '{extras[0]}'", param=f"tools[{index}].{extras[0]}", code="unsupported_parameter")
+                break
+    if isinstance(body.get("previous_response_id"), str) and isinstance(body.get("input"), list):
+        if _normalize_previous_response_tool_replay(body["input"], body["previous_response_id"]) != body["input"]:
+            field_changes.append({"field": "input", "action": "normalized", "reason": "previous_response_tool_replay"})
+            warnings.append("replayed function_call was dropped from previous_response_id tool continuation")
+    if isinstance(body.get("tool_choice"), str):
+        payload["tool_choice"] = body["tool_choice"]
+    elif isinstance(body.get("tool_choice"), dict):
+        normalized_tool_choice = _normalize_responses_tool_choice(body["tool_choice"])
+        if normalized_tool_choice != body["tool_choice"]:
+            payload["tool_choice"] = normalized_tool_choice
+            field_changes.append({"field": "tool_choice", "action": "normalized", "to": "function.name"})
+            warnings.append("tool_choice function shorthand was normalized for Fireworks Responses compatibility")
+    if payload.get("stream") is True and _is_sub2api_bridge_shape(body):
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        payload["metadata"] = {**metadata, "fireworks2api_suppress_reasoning_stream": True}
+        field_changes.append({"field": "reasoning", "action": "stream_suppressed", "scope": "sub2api_bridge"})
+        warnings.append("reasoning summary stream events will be suppressed for sub2api/Claude Code compatibility")
+    if _responses_stream_needs_continuation_storage(body):
+        if body.get("store") is not True:
+            payload["store"] = True
+            field_changes.append({"field": "store", "from": body.get("store"), "to": True, "reason": "sub2api_previous_response_compat"})
+            warnings.append("store was forced to true so streamed tool continuations can use previous_response_id")
+    for field in sorted(set(body) & _OPENAI_RESPONSES_ACCEPT_DROP_FIELDS):
+        field_changes.append({"field": field, "action": "dropped"})
+        warnings.append(f"{field} is accepted for OpenAI compatibility but not forwarded to Fireworks Responses")
+    if "max_tokens" in body:
+        target = OPENAI_TO_FIREWORKS_RESPONSES_FIELDS["max_tokens"]
+        payload[target] = body["max_tokens"]
+        field_changes.append({"field": "max_tokens", "to": target})
+        warnings.append("max_tokens is not a standard Responses field; mapped to max_output_tokens")
+    payload["model"] = context.resolved_model.upstream_model
+    headers = build_adapter_headers(context)
+    return payload, headers, {"field_changes": field_changes, "warnings": warnings}
+
+
+def resolve_responses_upstream_path(upstream_base_url: str, endpoint: str = "responses") -> str:
+    return resolve_inference_path(upstream_base_url, endpoint)

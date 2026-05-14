@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>账号管理 - fireworks2api</title>
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
+  <link href="/static/css/app.css?v=20260507-2" rel="stylesheet">
+</head>
+<body>
+  <div id="admin-header"></div>
+  <main class="admin-main">
+    <section class="page-hd">
+      <div>
+        <h1 class="page-title" data-i18n="account.title">账号管理</h1>
+        <p class="page-sub" data-i18n="account.subtitle">粘贴 Fireworks API Key 并在此管理启用状态、冷却状态和调用统计。</p>
+      </div>
+      <div class="action-box page-action-box">
+        <button class="btn action-btn action-btn-ghost" id="btn-refresh" type="button">
+          <span class="action-icon" aria-hidden="true">↺</span>
+          <span data-i18n="common.refresh">刷新</span>
+        </button>
+        <button class="btn action-btn action-btn-danger action-btn-destructive" id="btn-clean-invalid" type="button">
+          <span class="action-icon" aria-hidden="true">×</span>
+          <span data-i18n="account.cleanInvalid">清理失效 Key</span>
+        </button>
+        <button class="btn action-btn action-btn-primary" id="btn-add" type="button">
+          <span class="action-icon" aria-hidden="true">+</span>
+          <span data-i18n="account.addKey">添加 Key</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="stat-grid" id="overview-stats">
+      <div class="stat-cell"><div class="stat-label" data-i18n="account.total">总数</div><div class="stat-num" id="stat-total">0</div><div class="stat-sub" data-i18n="account.totalSub">全部账号</div></div>
+      <div class="stat-cell"><div class="stat-label" data-i18n="account.healthy">可用</div><div class="stat-num" id="stat-healthy">0</div><div class="stat-sub" data-i18n="account.healthySub">正常可用</div></div>
+      <div class="stat-cell"><div class="stat-label" data-i18n="account.cooldown">冷却中</div><div class="stat-num" id="stat-cooldown">0</div><div class="stat-sub" data-i18n="account.cooldownSub">冷却中</div></div>
+      <div class="stat-cell"><div class="stat-label" data-i18n="account.disabled">已禁用</div><div class="stat-num" id="stat-disabled">0</div><div class="stat-sub" data-i18n="account.disabledSub">已禁用</div></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-hd">
+        <div>
+          <div class="panel-title" data-i18n="account.listTitle">Key 列表</div>
+          <div class="panel-sub" data-i18n="account.listSub">管理每个 Fireworks API Key 的启用状态与故障信息。</div>
+        </div>
+      </div>
+
+      <div id="empty-state" class="empty hidden">
+        <div class="panel-title" data-i18n="account.emptyTitle">还没有添加任何 Key</div>
+        <div class="panel-sub" data-i18n="account.emptySub">点击“添加 Key”开始添加你的第一个 Fireworks API Key。</div>
+      </div>
+
+      <div class="table-card" id="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th data-i18n="account.key">Fireworks Key</th>
+              <th data-i18n="account.accountId">账号 ID</th>
+              <th data-i18n="account.status">状态</th>
+              <th data-i18n="account.quota">配额</th>
+              <th data-i18n="account.sla">SLA / 健康</th>
+              <th data-i18n="account.recentRequests">最近请求</th>
+              <th data-i18n="account.cacheHitRate">缓存命中率</th>
+              <th data-i18n="account.actions">操作</th>
+            </tr>
+          </thead>
+          <tbody id="keys-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <div class="modal-backdrop" id="key-modal-backdrop" aria-hidden="true">
+    <div class="modal">
+      <div class="modal-hd">
+        <div>
+          <div class="modal-title" id="key-modal-title" data-i18n="account.modal.add">添加 Key</div>
+          <div class="modal-sub" data-i18n="account.modal.note">每行粘贴一个 Fireworks API Key；添加后会自动获取账号和配额信息，列表只展示脱敏后的 Key。</div>
+        </div>
+        <button class="btn btn-ghost btn-small" id="key-modal-close" type="button" data-i18n="common.close">关闭</button>
+      </div>
+      <form id="key-form" class="form-grid">
+        <label class="label" id="key-name-label"><span data-i18n="account.name">名称</span><input class="input" id="key-name" autocomplete="off" placeholder="e.g. primary" data-i18n-placeholder="account.namePlaceholder"></label>
+        <label class="label"><span data-i18n="account.apiKeys">Fireworks API Keys</span><textarea class="textarea" id="api-key" placeholder="每行粘贴一个 Fireworks API Key" data-i18n-placeholder="account.apiKeysPlaceholder"></textarea></label>
+        <label class="check-row"><input type="checkbox" id="key-enabled" checked> <span data-i18n="common.enable">启用</span></label>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" id="key-cancel" data-i18n="common.cancel">取消</button>
+          <button type="submit" class="btn btn-primary" id="key-submit" data-i18n="common.submit">提交</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/static/js/i18n.js?v=20260506-3"></script>
+  <script src="/static/js/toast.js?v=20260506-3"></script>
+  <script src="/static/js/auth.js?v=20260506-3"></script>
+  <script src="/static/js/admin-header.js?v=20260506-3"></script>
+  <script src="/static/js/account.js?v=20260507-1"></script>
+</body>
+</html>

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>fireworks2api - Admin</title>
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
+  <link href="/static/css/app.css?v=20260507-2" rel="stylesheet">
+</head>
+<body class="login-body">
+  <div class="login-bg"></div>
+  <main class="login-shell">
+    <section class="login-card">
+      <div class="login-brand">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2 4 13h7l-1 9 10-13h-7l1-7h-2Z"/></svg>
+        <span>fireworks2api</span>
+      </div>
+      <div class="login-lang">
+        <button class="lang-pill" type="button" data-login-lang="zh" onclick="switchLoginLanguage('zh')">CN</button>
+        <button class="lang-pill" type="button" data-login-lang="en" onclick="switchLoginLanguage('en')">EN</button>
+      </div>
+      <h1 class="login-title" data-i18n="login.title">管理后台</h1>
+      <p class="login-subtitle" data-i18n="login.subtitle">请输入 ADMIN_TOKEN 继续。Fireworks API Key 可在后台账号页添加。</p>
+      <div class="login-form">
+        <input class="input" id="token" type="password" data-i18n-placeholder="login.placeholder" placeholder="ADMIN_TOKEN" autocomplete="current-password">
+        <button class="btn btn-primary" id="login-btn" data-i18n="login.submit">继续</button>
+      </div>
+    </section>
+  </main>
+  <script src="/static/js/i18n.js?v=20260506-3"></script>
+  <script src="/static/js/toast.js?v=20260506-3"></script>
+  <script src="/static/js/auth.js?v=20260506-3"></script>
+  <script>
+    const tokenInput = document.getElementById('token');
+    const loginBtn = document.getElementById('login-btn');
+
+    function syncLoginLanguageButtons() {
+      const lang = getLanguage();
+      document.querySelector('.login-lang')?.setAttribute('data-current', lang);
+      document.querySelectorAll('[data-login-lang]').forEach(button => {
+        const active = button.dataset.loginLang === lang;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+    }
+
+    function switchLoginLanguage(lang) {
+      const next = lang === 'en' ? 'en' : 'zh';
+      if (next === getLanguage()) return;
+      document.querySelector('.login-lang')?.setAttribute('data-current', next);
+      document.querySelectorAll('[data-login-lang]').forEach(button => {
+        const active = button.dataset.loginLang === next;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+      setTimeout(() => setLanguage(next), 180);
+    }
+
+    async function login() {
+      const token = tokenInput.value.trim();
+      if (!token) return showToast(t('login.promptToken'), 'error');
+      loginBtn.disabled = true;
+      try {
+        if (await verifyAdminToken(token)) {
+          setAdminToken(token);
+          location.href = '/admin/account';
+        } else {
+          showToast(t('login.invalidToken'), 'error');
+        }
+      } catch (err) {
+        showToast(`${t('common.connectionFailed')}：${err.message || err}`, 'error');
+      } finally {
+        loginBtn.disabled = false;
+      }
+    }
+
+    loginBtn.addEventListener('click', login);
+    tokenInput.addEventListener('keydown', event => { if (event.key === 'Enter') login(); });
+    applyI18n(document);
+    syncLoginLanguageButtons();
+    (async () => {
+      const token = getAdminToken();
+      if (token && await verifyAdminToken(token).catch(() => false)) location.href = '/admin/account';
+    })();
+  </script>
+</body>
+</html>

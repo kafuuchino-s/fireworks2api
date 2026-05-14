@@ -1,0 +1,13 @@
+services:
+  fireworks2api:
+    image: kafuuchino520/fireworks2api:latest
+    container_name: fireworks2api
+    env_file:
+      - .env
+    ports:
+      - "${HOST_PORT:-8000}:${PORT:-8000}"
+    environment:
+      DATA_DIR: /app/data
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

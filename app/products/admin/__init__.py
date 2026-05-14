@@ -1,0 +1,1 @@
+"""Admin product router package."""
