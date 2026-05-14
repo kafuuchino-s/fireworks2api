@@ -56,3 +56,38 @@ def _family_capabilities(upstream_model: str) -> ReasoningModelCapabilities:
 
 def classify_reasoning_model(upstream_model: str) -> ReasoningModelCapabilities:
     return _family_capabilities(upstream_model)
+
+
+def normalize_responses_reasoning_effort(
+    upstream_model: str,
+    effort: object,
+) -> tuple[object, str | None]:
+    """Normalize Responses reasoning effort values that Fireworks rejects.
+
+    Fireworks accepts ``xhigh`` as a generic value, but live smoke shows some
+    model families still reject ``xhigh``/``max`` inside Responses streams.
+    Keep known-compatible families untouched and only downgrade families whose
+    model-specific validation accepts at most high.
+    """
+
+    if not isinstance(effort, str):
+        return effort, None
+    raw = effort.strip()
+    if not raw:
+        return effort, None
+
+    value = raw.lower()
+    value = value.replace("-", "").replace("_", "").replace(" ", "")
+    if value == "extrahigh":
+        value = "xhigh"
+
+    if value not in {"xhigh", "max"}:
+        return raw.lower() if raw.lower() != effort else effort, None
+
+    base = (upstream_model or "").strip().lower().rsplit("/", 1)[-1]
+    if base.startswith(("glm-", "minimax-m2", "gpt-oss-", "deepseek-v3")):
+        return "high", "model_accepts_highest_effort_as_high"
+    if value != effort:
+        return value, "reasoning_effort_alias_normalized"
+
+    return value, None

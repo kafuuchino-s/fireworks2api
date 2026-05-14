@@ -4,6 +4,7 @@ from typing import Any
 
 from app.dataplane.fireworks.contracts import OPENAI_TO_FIREWORKS_RESPONSES_FIELDS
 from app.dataplane.fireworks.paths import resolve_inference_path
+from app.dataplane.fireworks.reasoning_capabilities import normalize_responses_reasoning_effort
 from app.products.openai.contracts import OPENAI_NOT_RESPONSES
 from app.products.openai.errors import raise_openai_error
 from app.dataplane.fireworks.contracts import FIREWORKS_RESPONSES_SUPPORTED_FIELDS
@@ -127,6 +128,28 @@ def _responses_stream_needs_continuation_storage(body: dict[str, Any]) -> bool:
     if isinstance(input_items, list):
         return any(isinstance(item, dict) and item.get("type") in {"function_call", "function_call_output"} for item in input_items)
     return False
+
+
+def _normalize_reasoning_effort_for_upstream(
+    payload: dict[str, Any],
+    upstream_model: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    reasoning = payload.get("reasoning")
+    if not isinstance(reasoning, dict):
+        return None, None
+    original = reasoning.get("effort")
+    normalized, reason = normalize_responses_reasoning_effort(upstream_model, original)
+    if normalized == original:
+        return None, None
+    updated = dict(reasoning)
+    updated["effort"] = normalized
+    payload["reasoning"] = updated
+    return {
+        "field": "reasoning.effort",
+        "from": original,
+        "to": normalized,
+        "reason": reason or "reasoning_effort_normalized",
+    }, reason
 
 
 def _validate_responses_input_part(part: Any, *, item_index: int, part_index: int) -> None:
@@ -444,7 +467,15 @@ def build_responses_adapter(context) -> tuple[dict[str, Any], dict[str, str], di
         payload[target] = body["max_tokens"]
         field_changes.append({"field": "max_tokens", "to": target})
         warnings.append("max_tokens is not a standard Responses field; mapped to max_output_tokens")
-    payload["model"] = context.resolved_model.upstream_model
+    upstream_model = context.resolved_model.upstream_model
+    payload["model"] = upstream_model
+    reasoning_change, reasoning_reason = _normalize_reasoning_effort_for_upstream(payload, upstream_model)
+    if reasoning_change is not None:
+        field_changes.append(reasoning_change)
+        if reasoning_reason == "model_accepts_highest_effort_as_high":
+            warnings.append("reasoning.effort was reduced to high for this Fireworks model family")
+        else:
+            warnings.append("reasoning.effort was normalized for Fireworks Responses compatibility")
     headers = build_adapter_headers(context)
     return payload, headers, {"field_changes": field_changes, "warnings": warnings}
 

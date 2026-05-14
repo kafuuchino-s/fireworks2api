@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.dataplane.fireworks.reasoning_capabilities import normalize_responses_reasoning_effort
+
 
 def _is_text_block(block: Any) -> bool:
     return isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
@@ -120,6 +122,8 @@ def bridge_requires_stored_response(body: dict[str, Any], previous_response_id: 
 def build_responses_bridge_payload(body: dict[str, Any], upstream_model: str, previous_response_id: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     output_config = body.get("output_config") if isinstance(body.get("output_config"), dict) else {}
     max_tokens = body.get("max_tokens")
+    field_changes: list[dict[str, Any]] = []
+    warnings: list[str] = []
     payload: dict[str, Any] = {
         "model": upstream_model,
         "stream": True,
@@ -129,6 +133,19 @@ def build_responses_bridge_payload(body: dict[str, Any], upstream_model: str, pr
         "text": {"verbosity": "medium"},
         "reasoning": {"effort": output_config.get("effort") or "medium", "summary": "auto"},
     }
+    original_effort = payload["reasoning"]["effort"]
+    normalized_effort, reason = normalize_responses_reasoning_effort(upstream_model, original_effort)
+    if normalized_effort != original_effort:
+        payload["reasoning"]["effort"] = normalized_effort
+        field_changes.append(
+            {
+                "field": "reasoning.effort",
+                "from": original_effort,
+                "to": normalized_effort,
+                "reason": reason or "reasoning_effort_normalized",
+            }
+        )
+        warnings.append("reasoning.effort was normalized for Fireworks Responses compatibility")
     if isinstance(body.get("system"), str):
         payload["instructions"] = body["system"]
     elif isinstance(body.get("system"), list):
@@ -149,7 +166,12 @@ def build_responses_bridge_payload(body: dict[str, Any], upstream_model: str, pr
     tool_choice = _map_tool_choice(body.get("tool_choice"))
     if tool_choice is not None:
         payload["tool_choice"] = tool_choice
-    report = {"tool_choice": payload.get("tool_choice"), "message_count": len(payload.get("input", []))}
+    report = {
+        "tool_choice": payload.get("tool_choice"),
+        "message_count": len(payload.get("input", [])),
+        "field_changes": field_changes,
+        "warnings": warnings,
+    }
     return payload, report
 
 

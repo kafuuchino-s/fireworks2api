@@ -339,6 +339,47 @@ def test_build_responses_adapter_marks_sub2api_bridge_stream_for_reasoning_suppr
     assert any(change["field"] == "store" and change["to"] is True for change in report["field_changes"])
 
 
+@pytest.mark.parametrize(
+    ("upstream_model", "effort", "expected"),
+    [
+        ("accounts/fireworks/models/minimax-m2p7", "xhigh", "high"),
+        ("accounts/fireworks/models/minimax-m2p7", "max", "high"),
+        ("accounts/fireworks/models/glm-5p1", "xhigh", "high"),
+        ("accounts/fireworks/routers/glm-5p1-fast", "max", "high"),
+        ("accounts/fireworks/models/deepseek-v4-pro", "xhigh", "xhigh"),
+        ("accounts/fireworks/models/deepseek-v4-pro", "max", "max"),
+        ("accounts/fireworks/models/kimi-k2p6", "xhigh", "xhigh"),
+        ("accounts/fireworks/routers/kimi-k2p6-turbo", "max", "max"),
+    ],
+)
+def test_build_responses_adapter_normalizes_reasoning_effort_for_fireworks_models(
+    upstream_model: str,
+    effort: str,
+    expected: str,
+) -> None:
+    context = SimpleNamespace(
+        body={
+            "model": "test",
+            "input": "hello",
+            "stream": True,
+            "include": ["reasoning.encrypted_content"],
+            "parallel_tool_calls": True,
+            "text": {"verbosity": "medium"},
+            "reasoning": {"effort": effort, "summary": "auto"},
+        },
+        settings=SimpleNamespace(affinity_hash_secret="affinity-secret", log_hash_secret="log-secret"),
+        request_headers={},
+        stable_key="stable",
+        resolved_model=SimpleNamespace(upstream_model=upstream_model),
+    )
+
+    payload, _, report = native_responses.build_responses_adapter(context)
+
+    assert payload["reasoning"]["effort"] == expected
+    changed = expected != effort
+    assert any(change["field"] == "reasoning.effort" for change in report["field_changes"]) is changed
+
+
 def test_build_responses_adapter_preserves_plain_store_false() -> None:
     context = SimpleNamespace(
         body={"model": "test", "input": "hello", "stream": True, "store": False},

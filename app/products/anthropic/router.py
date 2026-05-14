@@ -152,7 +152,7 @@ async def _handle_messages_responses_bridge(request: Request, context, body: dic
         routed_key = context.repository.get_response_key_route(previous_response_id)
         if routed_key is not None:
             context = _with_selected_keys(context, [routed_key])
-    payload, _report = build_responses_bridge_payload(body, upstream_model, previous_response_id=previous_response_id)
+    payload, report = build_responses_bridge_payload(body, upstream_model, previous_response_id=previous_response_id)
     if previous_response_id:
         payload = trim_responses_input_to_latest_turn(payload)
     upstream_base_url = getattr(getattr(context, "settings", None), "upstream_base_url", "")
@@ -171,7 +171,20 @@ async def _handle_messages_responses_bridge(request: Request, context, body: dic
             "route_key": getattr(context, "route_key", None),
         },
     )
-    record_proxy_transform_debug(context, endpoint="messages", upstream_endpoint=upstream_path, payload=payload, headers={}, stream=True, service_tier=payload.get("service_tier") if isinstance(payload.get("service_tier"), str) else None, warnings=["anthropic messages bridge enabled"])
+    record_proxy_transform_debug(
+        context,
+        endpoint="messages",
+        upstream_endpoint=upstream_path,
+        payload=payload,
+        headers={},
+        stream=True,
+        service_tier=payload.get("service_tier") if isinstance(payload.get("service_tier"), str) else None,
+        field_changes=report.get("field_changes", []) if isinstance(report, dict) else [],
+        warnings=[
+            "anthropic messages bridge enabled",
+            *(report.get("warnings", []) if isinstance(report, dict) else []),
+        ],
+    )
 
     def bind_bridge_response(response_id: str, key) -> None:
         if not session_hash or not repository_has_bridge_sessions:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.products.anthropic.responses_bridge import (
     ResponsesToAnthropicStreamAdapter,
     build_responses_bridge_payload,
@@ -39,6 +41,35 @@ def test_build_responses_bridge_payload_maps_messages_tools_and_defaults() -> No
     assert payload["input"][1]["content"][1]["type"] == "function_call"
     assert payload["input"][2]["content"][0]["type"] == "function_call_output"
     assert report["tool_choice"] == {"type": "function", "name": "lookup"}
+
+
+@pytest.mark.parametrize(
+    ("upstream_model", "effort", "expected"),
+    [
+        ("accounts/fireworks/models/glm-5p1", "max", "high"),
+        ("accounts/fireworks/routers/glm-5p1-fast", "xhigh", "high"),
+        ("accounts/fireworks/models/minimax-m2p7", "max", "high"),
+        ("accounts/fireworks/models/deepseek-v4-pro", "max", "max"),
+        ("accounts/fireworks/models/kimi-k2p6", "xhigh", "xhigh"),
+    ],
+)
+def test_build_responses_bridge_payload_normalizes_reasoning_effort(
+    upstream_model: str,
+    effort: str,
+    expected: str,
+) -> None:
+    payload, report = build_responses_bridge_payload(
+        {
+            "messages": [{"role": "user", "content": "hello"}],
+            "output_config": {"effort": effort},
+            "max_tokens": 512,
+        },
+        upstream_model,
+    )
+
+    assert payload["reasoning"]["effort"] == expected
+    changed = expected != effort
+    assert any(change["field"] == "reasoning.effort" for change in report["field_changes"]) is changed
 
 
 def test_trim_responses_input_to_latest_turn_keeps_latest_and_following_outputs() -> None:
