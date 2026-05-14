@@ -244,6 +244,19 @@ button { border: 0; background: transparent; cursor: pointer; }
 .stat-label { color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
 .stat-num { font-size: 24px; font-weight: 800; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
 .stat-sub { color: var(--subtle); font-size: 12px; }
+.quota-pool { margin: -8px 0 22px; padding: 15px 16px; display: grid; gap: 11px; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; box-shadow: 0 1px 0 rgba(17,17,17,.02); }
+.quota-pool-hd { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; min-width: 0; }
+.quota-pool-copy { min-width: 0; display: grid; gap: 3px; }
+.quota-pool-title { color: #2f2a24; font-size: 13px; font-weight: 850; }
+.quota-pool-sub { color: var(--muted); font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.quota-pool-value { flex: 0 0 auto; color: #171717; font-size: 22px; font-weight: 900; letter-spacing: -.03em; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.quota-pool-track { position: relative; width: 100%; height: 8px; border-radius: 999px; background: #ece6dc; overflow: hidden; }
+.quota-pool-fill { height: 100%; width: 0; border-radius: inherit; background: var(--success); transition: width .18s ease; }
+.quota-pool-ok .quota-pool-fill { background: var(--success); }
+.quota-pool-warn .quota-pool-fill { background: var(--warn); }
+.quota-pool-danger .quota-pool-fill { background: var(--error); }
+.quota-pool-unavailable .quota-pool-fill { background: #bdb6ac; }
+.quota-pool-meta { min-height: 14px; color: var(--subtle); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
 
 .panel { background: #fff; border-radius: var(--radius); padding: 16px; box-shadow: 0 1px 0 rgba(17,17,17,.02); }
 .panel + .panel { margin-top: 14px; }
@@ -463,6 +476,8 @@ tr:hover td { background: #fdfbf7; }
   .status-detail-value { max-width: 100%; justify-content: flex-start; text-align: left; }
   .form-row { grid-template-columns: 1fr; }
   .config-section .config-grid { grid-template-columns: 1fr; }
+  .quota-pool-hd { flex-direction: column; gap: 8px; }
+  .quota-pool-value { text-align: left; white-space: normal; overflow-wrap: anywhere; }
   .proxy-keys-head, .proxy-keys-inline { grid-template-columns: 1fr; display: grid; }
   .action-box { width: 100%; justify-content: flex-start; }
   .action-box .action-btn { flex: 1 1 140px; }

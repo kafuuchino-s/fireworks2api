@@ -194,6 +194,7 @@ def _snapshot_response_item(key, snapshot, *, source: str, stale: bool) -> dict[
     return {
         "key_name": key.name,
         "masked_key": redact_secret(key.api_key, visible=6),
+        "enabled": getattr(key, "enabled", None),
         "account_id": _snapshot_value(snapshot, "account_id"),
         "account_label": _snapshot_value(snapshot, "account_label"),
         "account_state": _snapshot_value(snapshot, "account_state"),
@@ -211,6 +212,126 @@ def _snapshot_response_item(key, snapshot, *, source: str, stale: bool) -> dict[
         "last_refresh_error_type": _snapshot_value(snapshot, "last_refresh_error_type"),
         "last_refresh_error": _snapshot_value(snapshot, "last_refresh_error"),
         "error": _snapshot_value(snapshot, "last_refresh_error") if _snapshot_value(snapshot, "last_refresh_error") else None,
+    }
+
+
+def _pool_group_key(item: dict[str, Any]) -> tuple[str, str]:
+    account_id = _normalize_fireworks_account_id(str(item.get("account_id") or "").strip())
+    if account_id:
+        return f"account:{account_id}", "account"
+    key_name = str(item.get("key_name") or item.get("masked_key") or "").strip()
+    return f"key:{key_name}", "key"
+
+
+def _pool_item_score(item: dict[str, Any]) -> int:
+    summary = item.get("quota_summary") if isinstance(item.get("quota_summary"), dict) else {}
+    status = str(item.get("quota_status") or "").casefold()
+    score = 0
+    if item.get("quota_supported") is True:
+        score += 4
+    if status == "ok":
+        score += 4
+    if not item.get("stale"):
+        score += 2
+    if item.get("refresh_status") != "error" and not item.get("last_refresh_error_type"):
+        score += 2
+    if any(_quota_number(summary.get(name)) is not None for name in ("monthly_budget", "monthly_used", "monthly_remaining")):
+        score += 3
+    return score
+
+
+def _pool_number(summary: dict[str, Any], name: str) -> float | int | None:
+    return _quota_number(summary.get(name))
+
+
+def _fireworks_key_pool_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
+    enabled_items = [item for item in items if item.get("enabled") is not False]
+    groups: dict[str, dict[str, Any]] = {}
+    group_kinds: dict[str, str] = {}
+    grouped_key_counts: dict[str, int] = {}
+    for item in enabled_items:
+        group_key, kind = _pool_group_key(item)
+        grouped_key_counts[group_key] = grouped_key_counts.get(group_key, 0) + 1
+        if group_key not in groups or _pool_item_score(item) > _pool_item_score(groups[group_key]):
+            groups[group_key] = item
+            group_kinds[group_key] = kind
+
+    monthly_budget = 0.0
+    monthly_used = 0.0
+    monthly_remaining = 0.0
+    has_budget = False
+    has_used = False
+    has_remaining = False
+    stale_count = 0
+    refresh_error_count = 0
+    unavailable_count = 0
+    blocking_count = 0
+    status_counts: dict[str, int] = {}
+
+    blocking_statuses = {"quota_exhausted", "billing_required", "suspended", "auth_error", "disabled", "unusable"}
+    for item in groups.values():
+        summary = item.get("quota_summary") if isinstance(item.get("quota_summary"), dict) else {}
+        status_value = str(item.get("quota_status") or summary.get("quota_status") or "unavailable").casefold()
+        status_counts[status_value] = status_counts.get(status_value, 0) + 1
+        if item.get("stale"):
+            stale_count += 1
+        if item.get("refresh_status") == "error" or item.get("last_refresh_error_type"):
+            refresh_error_count += 1
+        if item.get("quota_supported") is False or status_value in {"", "unavailable"}:
+            unavailable_count += 1
+        if status_value in blocking_statuses:
+            blocking_count += 1
+
+        budget = _pool_number(summary, "monthly_budget")
+        used = _pool_number(summary, "monthly_used")
+        remaining = _pool_number(summary, "monthly_remaining")
+        if remaining is None and budget is not None and used is not None:
+            remaining = max(0.0, float(budget) - float(used))
+        if budget is not None:
+            monthly_budget += float(budget)
+            has_budget = True
+        if used is not None:
+            monthly_used += float(used)
+            has_used = True
+        if remaining is not None:
+            monthly_remaining += float(remaining)
+            has_remaining = True
+
+    usage_ratio = monthly_used / monthly_budget if has_budget and monthly_budget > 0 and has_used else None
+    if not groups:
+        quota_status = "unavailable"
+    elif blocking_count == len(groups):
+        quota_status = "quota_exhausted" if status_counts.get("quota_exhausted") else "unavailable"
+    elif blocking_count:
+        quota_status = "degraded"
+    elif stale_count or refresh_error_count:
+        quota_status = "stale"
+    elif usage_ratio is not None and usage_ratio >= 0.9:
+        quota_status = "near_exhausted"
+    elif usage_ratio is not None and usage_ratio >= 0.7:
+        quota_status = "watch"
+    elif has_budget or has_used or has_remaining:
+        quota_status = "ok"
+    else:
+        quota_status = "unavailable"
+
+    return {
+        "key_count": len(items),
+        "enabled_key_count": len(enabled_items),
+        "quota_source_count": len(groups),
+        "account_count": sum(1 for kind in group_kinds.values() if kind == "account"),
+        "unknown_account_source_count": sum(1 for kind in group_kinds.values() if kind != "account"),
+        "deduplicated_key_count": sum(max(count - 1, 0) for count in grouped_key_counts.values()),
+        "monthly_budget": monthly_budget if has_budget else None,
+        "monthly_used": monthly_used if has_used else None,
+        "monthly_remaining": monthly_remaining if has_remaining else None,
+        "usage_ratio": usage_ratio,
+        "quota_status": quota_status,
+        "quota_status_counts": status_counts,
+        "stale_count": stale_count,
+        "refresh_error_count": refresh_error_count,
+        "unavailable_count": unavailable_count,
+        "blocking_count": blocking_count,
     }
 
 
@@ -397,7 +518,7 @@ async def list_fireworks_key_quota_summaries(request: Request, refresh: str = "a
         snapshot = snapshots.get(fingerprint)
         stale = _snapshot_is_stale(snapshot)
         items.append(_snapshot_response_item(key, snapshot, source="snapshot" if snapshot else "missing", stale=stale))
-    return {"supported": True, "items": items}
+    return {"supported": True, "items": items, "pool_summary": _fireworks_key_pool_summary(items)}
 
 
 @router.get("/fireworks/models")

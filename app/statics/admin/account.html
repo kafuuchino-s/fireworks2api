@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>账号管理 - fireworks2api</title>
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
-  <link href="/static/css/app.css?v=20260507-2" rel="stylesheet">
+  <link href="/static/css/app.css?v=20260515-1" rel="stylesheet">
 </head>
 <body>
   <div id="admin-header"></div>
@@ -36,6 +36,20 @@
       <div class="stat-cell"><div class="stat-label" data-i18n="account.healthy">可用</div><div class="stat-num" id="stat-healthy">0</div><div class="stat-sub" data-i18n="account.healthySub">正常可用</div></div>
       <div class="stat-cell"><div class="stat-label" data-i18n="account.cooldown">冷却中</div><div class="stat-num" id="stat-cooldown">0</div><div class="stat-sub" data-i18n="account.cooldownSub">冷却中</div></div>
       <div class="stat-cell"><div class="stat-label" data-i18n="account.disabled">已禁用</div><div class="stat-num" id="stat-disabled">0</div><div class="stat-sub" data-i18n="account.disabledSub">已禁用</div></div>
+    </section>
+
+    <section class="quota-pool quota-pool-unavailable" id="pool-quota">
+      <div class="quota-pool-hd">
+        <div class="quota-pool-copy">
+          <div class="quota-pool-title" data-i18n="account.poolQuota.title">Key 池总配额</div>
+          <div class="quota-pool-sub" id="pool-quota-details" data-i18n="account.poolQuota.loading">正在读取配额...</div>
+        </div>
+        <div class="quota-pool-value" id="pool-quota-primary">—</div>
+      </div>
+      <div class="quota-pool-track" id="pool-quota-track">
+        <div class="quota-pool-fill" id="pool-quota-fill"></div>
+      </div>
+      <div class="quota-pool-meta" id="pool-quota-meta"></div>
     </section>
 
     <section class="panel">
@@ -92,10 +106,10 @@
     </div>
   </div>
 
-  <script src="/static/js/i18n.js?v=20260506-3"></script>
+  <script src="/static/js/i18n.js?v=20260515-1"></script>
   <script src="/static/js/toast.js?v=20260506-3"></script>
   <script src="/static/js/auth.js?v=20260506-3"></script>
   <script src="/static/js/admin-header.js?v=20260506-3"></script>
-  <script src="/static/js/account.js?v=20260507-1"></script>
+  <script src="/static/js/account.js?v=20260515-2"></script>
 </body>
 </html>

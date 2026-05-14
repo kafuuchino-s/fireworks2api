@@ -655,6 +655,73 @@ def test_admin_fireworks_key_quota_summaries_refresh_none_uses_snapshots(monkeyp
     assert "fw-secret-full-key" not in response.text
 
 
+def test_admin_fireworks_key_quota_pool_summary_deduplicates_accounts(monkeypatch: MonkeyPatch) -> None:
+    _require_auth(monkeypatch)
+    headers = {"Authorization": "Bearer token"}
+
+    class FakeKey:
+        def __init__(self, name: str, api_key: str, fingerprint: str, enabled: bool = True) -> None:
+            self.name = name
+            self.api_key = api_key
+            self.fingerprint = fingerprint
+            self.enabled = enabled
+
+    class FakeSnapshot:
+        def __init__(self, fingerprint: str, account_id: str, budget: int, used: int) -> None:
+            self.key_fingerprint = fingerprint
+            self.account_id = account_id
+            self.account_label = "Primary"
+            self.account_state = "active"
+            self.suspend_state = "none"
+            self.quota_supported = True
+            self.quota_status = "ok"
+            self.quota_status_code = 200
+            self.quota_summary_json = json.dumps(
+                {"count": 1, "monthly_budget": budget, "monthly_used": used, "monthly_remaining": budget - used}
+            )
+            self.quota_items_json = "[]"
+            self.account_refreshed_at = "2026-05-06T00:00:00+00:00"
+            self.quota_refreshed_at = "2026-05-06T00:00:00+00:00"
+            self.stale_after = "2099-01-01T00:00:00+00:00"
+            self.refresh_status = "ok"
+            self.last_refresh_error_type = None
+            self.last_refresh_error = None
+
+    class FakeRepo:
+        def list_keys(self, include_disabled: bool = True):
+            return [
+                FakeKey("key-1", "fw-secret-one", "fp-1", True),
+                FakeKey("key-2", "fw-secret-two", "fp-2", True),
+                FakeKey("disabled", "fw-secret-disabled", "fp-3", False),
+            ]
+
+        def list_fireworks_key_snapshots(self):
+            return [
+                FakeSnapshot("fp-1", "e990e03e", 50, 5),
+                FakeSnapshot("fp-2", "accounts/e990e03e", 50, 5),
+                FakeSnapshot("fp-3", "other-account", 999, 1),
+            ]
+
+    monkeypatch.setattr(fireworks, "_repository", lambda request: FakeRepo())
+
+    response = client.get("/admin/fireworks/keys/quota-summaries", headers=headers, params={"refresh": "none"})
+
+    assert response.status_code == 200
+    summary = response.json()["pool_summary"]
+    assert summary["key_count"] == 3
+    assert summary["enabled_key_count"] == 2
+    assert summary["quota_source_count"] == 1
+    assert summary["account_count"] == 1
+    assert summary["deduplicated_key_count"] == 1
+    assert summary["monthly_budget"] == 50
+    assert summary["monthly_used"] == 5
+    assert summary["monthly_remaining"] == 45
+    assert summary["usage_ratio"] == 0.1
+    assert summary["quota_status"] == "ok"
+    assert "fw-secret-one" not in response.text
+    assert "fw-secret-two" not in response.text
+
+
 def test_admin_fireworks_key_quota_summaries_stale_auto_refresh(monkeypatch: MonkeyPatch) -> None:
     _require_auth(monkeypatch)
     headers = {"Authorization": "Bearer token"}

@@ -1,4 +1,4 @@
-let state = { overview: {}, keys: [], quotaSummaries: {}, editing: null };
+let state = { overview: {}, keys: [], quotaSummaries: {}, quotaPool: null, editing: null };
 
 const $ = id => document.getElementById(id);
 
@@ -53,6 +53,16 @@ function formatCurrency(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return '';
   return `$${n.toFixed(2)}`;
+}
+
+function finiteNumber(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function normalizedAccountId(value) {
+  return String(value || '').trim().replace(/^accounts\//, '');
 }
 
 function quotaSummaryText(q) {
@@ -127,6 +137,7 @@ function normalizeQuotaEntry(raw) {
   const itemCount = summary.count ?? raw.quota_items?.length ?? raw.items?.length;
   return {
     key_name: raw.key_name ?? raw.name ?? raw.keyName ?? '',
+    enabled: raw.enabled,
     available: raw.available ?? summary.available ?? (raw.quota_status === 'ok'),
     supported: raw.quota_supported ?? raw.supported ?? summary.supported,
     status: raw.status ?? summary.status ?? raw.quota_status ?? summary.quota_status,
@@ -156,6 +167,158 @@ function extractQuotaMap(payload) {
     if (q?.key_name) map[q.key_name] = q;
   }
   return map;
+}
+
+function normalizePoolSummary(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    key_count: finiteNumber(raw.key_count),
+    enabled_key_count: finiteNumber(raw.enabled_key_count),
+    quota_source_count: finiteNumber(raw.quota_source_count),
+    account_count: finiteNumber(raw.account_count),
+    unknown_account_source_count: finiteNumber(raw.unknown_account_source_count),
+    deduplicated_key_count: finiteNumber(raw.deduplicated_key_count),
+    monthly_budget: finiteNumber(raw.monthly_budget),
+    monthly_used: finiteNumber(raw.monthly_used),
+    monthly_remaining: finiteNumber(raw.monthly_remaining),
+    usage_ratio: finiteNumber(raw.usage_ratio),
+    quota_status: raw.quota_status || raw.status || 'unavailable',
+    stale_count: finiteNumber(raw.stale_count) || 0,
+    refresh_error_count: finiteNumber(raw.refresh_error_count) || 0,
+    unavailable_count: finiteNumber(raw.unavailable_count) || 0,
+    blocking_count: finiteNumber(raw.blocking_count) || 0,
+  };
+}
+
+function poolEntryScore(q) {
+  if (!q) return 0;
+  let score = 0;
+  if (q.supported === true || q.quota_supported === true) score += 4;
+  if (quotaStatus(q) === 'ok') score += 4;
+  if (!q.stale) score += 2;
+  if (q.refresh_status !== 'error' && !q.last_refresh_error_type) score += 2;
+  if (q.monthly_budget != null || q.monthly_used != null || q.monthly_remaining != null) score += 3;
+  return score;
+}
+
+function buildPoolQuotaSummary() {
+  const groups = new Map();
+  const groupCounts = new Map();
+  let enabledKeyCount = 0;
+  for (const key of state.keys) {
+    if (key.enabled === false) continue;
+    enabledKeyCount += 1;
+    const q = state.quotaSummaries?.[key.name] || null;
+    const accountId = normalizedAccountId(q?.account_id);
+    const groupKey = accountId ? `account:${accountId}` : `key:${key.name}`;
+    const candidate = q ? { ...q, account_id: accountId, key_name: key.name } : { key_name: key.name, quota_status: 'unavailable' };
+    groupCounts.set(groupKey, (groupCounts.get(groupKey) || 0) + 1);
+    if (!groups.has(groupKey) || poolEntryScore(candidate) > poolEntryScore(groups.get(groupKey))) {
+      groups.set(groupKey, candidate);
+    }
+  }
+
+  let monthlyBudget = 0;
+  let monthlyUsed = 0;
+  let monthlyRemaining = 0;
+  let hasBudget = false;
+  let hasUsed = false;
+  let hasRemaining = false;
+  let accountCount = 0;
+  let staleCount = 0;
+  let refreshErrorCount = 0;
+  let unavailableCount = 0;
+  let blockingCount = 0;
+  for (const [groupKey, q] of groups.entries()) {
+    if (groupKey.startsWith('account:')) accountCount += 1;
+    if (q.stale) staleCount += 1;
+    if (q.refresh_status === 'error' || q.last_refresh_error_type) refreshErrorCount += 1;
+    if (quotaIsBlocking(q)) blockingCount += 1;
+    if (q.available === false || q.supported === false || quotaStatus(q) === 'unavailable') unavailableCount += 1;
+    const budget = finiteNumber(q.monthly_budget);
+    const used = finiteNumber(q.monthly_used);
+    const remaining = finiteNumber(q.monthly_remaining) ?? (budget != null && used != null ? Math.max(0, budget - used) : null);
+    if (budget != null) { monthlyBudget += budget; hasBudget = true; }
+    if (used != null) { monthlyUsed += used; hasUsed = true; }
+    if (remaining != null) { monthlyRemaining += remaining; hasRemaining = true; }
+  }
+  const usageRatio = hasBudget && monthlyBudget > 0 && hasUsed ? monthlyUsed / monthlyBudget : null;
+  let quotaStatusValue = 'unavailable';
+  if (groups.size && blockingCount === groups.size) quotaStatusValue = 'quota_exhausted';
+  else if (blockingCount) quotaStatusValue = 'degraded';
+  else if (staleCount || refreshErrorCount) quotaStatusValue = 'stale';
+  else if (usageRatio != null && usageRatio >= 0.9) quotaStatusValue = 'near_exhausted';
+  else if (usageRatio != null && usageRatio >= 0.7) quotaStatusValue = 'watch';
+  else if (hasBudget || hasUsed || hasRemaining) quotaStatusValue = 'ok';
+  return {
+    key_count: state.keys.length,
+    enabled_key_count: enabledKeyCount,
+    quota_source_count: groups.size,
+    account_count: accountCount,
+    unknown_account_source_count: groups.size - accountCount,
+    deduplicated_key_count: [...groupCounts.values()].reduce((sum, count) => sum + Math.max(0, count - 1), 0),
+    monthly_budget: hasBudget ? monthlyBudget : null,
+    monthly_used: hasUsed ? monthlyUsed : null,
+    monthly_remaining: hasRemaining ? monthlyRemaining : null,
+    usage_ratio: usageRatio,
+    quota_status: quotaStatusValue,
+    stale_count: staleCount,
+    refresh_error_count: refreshErrorCount,
+    unavailable_count: unavailableCount,
+    blocking_count: blockingCount,
+  };
+}
+
+function poolQuotaKind(summary) {
+  const status = String(summary?.quota_status || '').toLowerCase();
+  const ratio = finiteNumber(summary?.usage_ratio);
+  if (['quota_exhausted', 'billing_required', 'suspended', 'auth_error', 'disabled', 'unusable'].includes(status) || summary?.blocking_count > 0 || (ratio != null && ratio >= 0.9)) return 'danger';
+  if (['degraded', 'stale', 'watch'].includes(status) || summary?.stale_count > 0 || summary?.refresh_error_count > 0 || summary?.unavailable_count > 0 || (ratio != null && ratio >= 0.7)) return 'warn';
+  if (status === 'ok' || summary?.monthly_budget != null || summary?.monthly_remaining != null) return 'ok';
+  return 'unavailable';
+}
+
+function renderPoolQuota() {
+  const host = $('pool-quota');
+  if (!host) return;
+  const summary = state.quotaPool || buildPoolQuotaSummary();
+  const kind = poolQuotaKind(summary);
+  host.className = `quota-pool quota-pool-${kind}`;
+
+  const used = finiteNumber(summary.monthly_used);
+  const budget = finiteNumber(summary.monthly_budget);
+  const remaining = finiteNumber(summary.monthly_remaining) ?? (budget != null && used != null ? Math.max(0, budget - used) : null);
+  const ratio = finiteNumber(summary.usage_ratio) ?? (budget != null && budget > 0 && used != null ? used / budget : null);
+  const hasMonthly = budget != null || used != null || remaining != null;
+  $('pool-quota-primary').textContent = hasMonthly
+    ? (budget != null || used != null ? `${formatCurrency(used) || '—'} / ${formatCurrency(budget) || '—'}` : `${t('account.quota.remaining')} ${formatCurrency(remaining) || remaining}`)
+    : t('account.poolQuota.unavailable');
+
+  const track = $('pool-quota-track');
+  const fill = $('pool-quota-fill');
+  const percent = ratio == null ? null : Math.max(0, Math.min(100, ratio * 100));
+  track.classList.toggle('hidden', percent == null);
+  fill.style.width = `${percent == null ? 0 : percent.toFixed(0)}%`;
+
+  const details = [];
+  if (remaining != null && (budget != null || used != null)) details.push(`${t('account.quota.remaining')} ${formatCurrency(remaining) || remaining}`);
+  if (summary.quota_source_count || summary.enabled_key_count) {
+    details.push(t('account.poolQuota.sources', {
+      accounts: num(summary.account_count || 0),
+      sources: num(summary.quota_source_count || 0),
+      keys: num(summary.enabled_key_count || 0),
+    }));
+  }
+  if (!details.length) details.push(state.keys.length ? t('account.poolQuota.noQuota') : t('account.poolQuota.empty'));
+  $('pool-quota-details').textContent = details.join(' · ');
+
+  const meta = [];
+  if (summary.deduplicated_key_count > 0) meta.push(t('account.poolQuota.deduped', { count: num(summary.deduplicated_key_count) }));
+  if (summary.blocking_count > 0) meta.push(t('account.poolQuota.blockingSources', { count: num(summary.blocking_count) }));
+  if (summary.stale_count > 0) meta.push(t('account.poolQuota.staleSources', { count: num(summary.stale_count) }));
+  if (summary.refresh_error_count > 0) meta.push(t('account.poolQuota.refreshErrors', { count: num(summary.refresh_error_count) }));
+  if (summary.unavailable_count > 0) meta.push(t('account.poolQuota.unavailableSources', { count: num(summary.unavailable_count) }));
+  $('pool-quota-meta').textContent = meta.join(' · ');
 }
 
 function quotaText(key) {
@@ -192,6 +355,7 @@ function render() {
   $('stat-healthy').textContent = num(o.healthy_key_count ?? o.healthy ?? state.keys.filter(k => k.enabled && !k.cooldown_active).length);
   $('stat-cooldown').textContent = num(o.cooldown_key_count ?? o.cooldown ?? state.keys.filter(k => k.cooldown_active).length);
   $('stat-disabled').textContent = num(o.disabled_key_count ?? o.disabled ?? state.keys.filter(k => !k.enabled).length);
+  renderPoolQuota();
 
   const tbody = $('keys-tbody');
   if (!state.keys.length) {
@@ -256,6 +420,7 @@ function removeDeletedKeysFromView(items = []) {
   if (!deletedNames.size) return;
   state.keys = state.keys.filter(key => !deletedNames.has(key.name));
   for (const name of deletedNames) delete state.quotaSummaries?.[name];
+  state.quotaPool = buildPoolQuotaSummary();
   syncOverviewFromKeys();
   render();
 }
@@ -270,8 +435,10 @@ async function loadData(options = {}) {
     try {
       const quotaRes = await adminFetch(`/admin/fireworks/keys/quota-summaries?refresh=${forceQuota ? 'force' : 'auto'}`);
       state.quotaSummaries = extractQuotaMap(quotaRes);
+      state.quotaPool = normalizePoolSummary(quotaRes?.pool_summary) || buildPoolQuotaSummary();
     } catch (quotaErr) {
       state.quotaSummaries = {};
+      state.quotaPool = null;
       if (quotaErr?.status !== 404) console.warn('quota summaries unavailable', quotaErr);
     }
     render();
