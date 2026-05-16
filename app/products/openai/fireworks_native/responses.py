@@ -73,6 +73,17 @@ def _normalize_responses_input_item(item: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
+def _normalize_responses_input_items(input_items: list[Any]) -> tuple[list[Any], int]:
+    normalized: list[Any] = []
+    dropped_reasoning = 0
+    for item in input_items:
+        if isinstance(item, dict) and item.get("type") == "reasoning":
+            dropped_reasoning += 1
+            continue
+        normalized.append(_normalize_responses_input_item(item) if isinstance(item, dict) else item)
+    return normalized, dropped_reasoning
+
+
 def _normalize_previous_response_tool_replay(input_items: Any, previous_response_id: Any) -> Any:
     if not isinstance(previous_response_id, str) or not isinstance(input_items, list):
         return input_items
@@ -104,7 +115,7 @@ def _normalize_responses_tool_choice(tool_choice: Any) -> Any:
     return tool_choice
 
 
-def _is_sub2api_bridge_shape(body: dict[str, Any]) -> bool:
+def is_sub2api_bridge_shape(body: dict[str, Any]) -> bool:
     include = body.get("include")
     if isinstance(include, list) and "reasoning.encrypted_content" in include:
         return True
@@ -117,7 +128,7 @@ def _is_sub2api_bridge_shape(body: dict[str, Any]) -> bool:
 def _responses_stream_needs_continuation_storage(body: dict[str, Any]) -> bool:
     if body.get("stream") is not True:
         return False
-    if _is_sub2api_bridge_shape(body):
+    if is_sub2api_bridge_shape(body):
         return True
     if isinstance(body.get("previous_response_id"), str):
         return True
@@ -209,6 +220,8 @@ def _validate_responses_input_message(message: Any, *, index: int) -> None:
                 raise_openai_error("function_call items require name", param=f"input[{index}].name", code="invalid_request_error")
             if "arguments" in message and not isinstance(message["arguments"], str):
                 raise_openai_error("function_call.arguments must be a string", param=f"input[{index}].arguments", code="invalid_request_error")
+            return
+        elif item_type == "reasoning":
             return
         elif item_type not in _RESPONSES_OUTPUT_ITEM_TYPES:
             raise_openai_error(f"unsupported input item type '{item_type}'", param=f"input[{index}].type", code="unsupported_parameter")
@@ -364,6 +377,8 @@ def validate_responses_body(body: dict[str, Any]) -> None:
                 if "arguments" in item and not isinstance(item["arguments"], str):
                     raise_openai_error("function_call.arguments must be a string", param=f"input[{index}].arguments", code="invalid_request_error")
                 continue
+            if item_type == "reasoning":
+                continue
             if item_type not in _RESPONSES_OUTPUT_ITEM_TYPES:
                 raise_openai_error(f"unsupported input item type '{item_type}'", param=f"input[{index}].type", code="unsupported_parameter")
             if not _is_nonempty_str(item.get("tool_call_id")):
@@ -415,16 +430,16 @@ def build_responses_adapter(context) -> tuple[dict[str, Any], dict[str, str], di
     body = context.body
     validate_responses_body(body)
     payload = _copy_allowed(body, FIREWORKS_RESPONSES_SUPPORTED_FIELDS)
+    field_changes: list[dict[str, Any]] = []
+    warnings: list[str] = []
     if isinstance(payload.get("input"), list):
-        payload["input"] = [
-            _normalize_responses_input_item(item) if isinstance(item, dict) else item
-            for item in payload["input"]
-        ]
+        payload["input"], dropped_reasoning = _normalize_responses_input_items(payload["input"])
+        if dropped_reasoning:
+            field_changes.append({"field": "input", "action": "dropped", "type": "reasoning", "count": dropped_reasoning})
+            warnings.append("reasoning input items were dropped before forwarding to Fireworks Responses")
         normalized_replay = _normalize_previous_response_tool_replay(payload["input"], body.get("previous_response_id"))
         if normalized_replay != payload["input"]:
             payload["input"] = normalized_replay
-    field_changes: list[dict[str, Any]] = []
-    warnings: list[str] = []
     tools = body.get("tools")
     if isinstance(tools, list):
         for index, tool in enumerate(tools):
@@ -449,7 +464,7 @@ def build_responses_adapter(context) -> tuple[dict[str, Any], dict[str, str], di
             payload["tool_choice"] = normalized_tool_choice
             field_changes.append({"field": "tool_choice", "action": "normalized", "to": "function.name"})
             warnings.append("tool_choice function shorthand was normalized for Fireworks Responses compatibility")
-    if payload.get("stream") is True and _is_sub2api_bridge_shape(body):
+    if payload.get("stream") is True and is_sub2api_bridge_shape(body):
         metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
         payload["metadata"] = {**metadata, "fireworks2api_suppress_reasoning_stream": True}
         field_changes.append({"field": "reasoning", "action": "stream_suppressed", "scope": "sub2api_bridge"})

@@ -29,6 +29,29 @@ _TOOL_NAME_MAP = {
 }
 
 
+def strip_reasoning_output_items(payload: dict[str, Any]) -> dict[str, Any]:
+    updated = _strip_reasoning_from_response_object(payload)
+    response = updated.get("response")
+    if isinstance(response, dict):
+        stripped_response = _strip_reasoning_from_response_object(response)
+        if stripped_response is not response:
+            updated = dict(updated)
+            updated["response"] = stripped_response
+    return updated
+
+
+def _strip_reasoning_from_response_object(response: dict[str, Any]) -> dict[str, Any]:
+    output = response.get("output")
+    if not isinstance(output, list):
+        return response
+    stripped = [item for item in output if not (isinstance(item, dict) and item.get("type") == "reasoning")]
+    if len(stripped) == len(output):
+        return response
+    updated = dict(response)
+    updated["output"] = stripped
+    return updated
+
+
 class ResponsesSSECanonicalizer:
     """Canonicalize Responses SSE for clients that translate it back to Anthropic.
 
@@ -95,6 +118,8 @@ class ResponsesSSECanonicalizer:
             payload.setdefault("type", event_type)
         payload = self._wrap_top_level_response(event_type, payload)
         payload = self._correct_tool_payload(event_type, payload)
+        if self._sub2api_bridge_compat:
+            payload = strip_reasoning_output_items(payload)
 
         synthetic: list[str] = []
         output_index = payload.get("output_index")

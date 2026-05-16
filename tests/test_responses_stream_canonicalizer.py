@@ -47,6 +47,18 @@ def test_canonicalizer_can_suppress_reasoning_events_for_anthropic_bridges() -> 
     assert _events(text)[0]["type"] == "response.output_text.delta"
 
 
+def test_bridge_compat_strips_reasoning_from_completed_response_output() -> None:
+    canonicalizer = ResponsesSSECanonicalizer(sub2api_bridge_compat=True)
+
+    output = canonicalizer.feed(
+        b'event: response.completed\n'
+        b'data: {"id":"resp_1","object":"response","status":"completed","output":[{"type":"reasoning","id":"rs_1"},{"type":"message","id":"msg_1"}]}\n\n'
+    )
+
+    events = _events(output)
+    assert events[0]["response"]["output"] == [{"type": "message", "id": "msg_1"}]
+
+
 def test_bridge_compat_drops_message_done_events_that_close_current_block_globally() -> None:
     canonicalizer = ResponsesSSECanonicalizer(sub2api_bridge_compat=True)
 

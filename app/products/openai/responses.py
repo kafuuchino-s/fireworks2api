@@ -8,9 +8,9 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from app.dataplane.fireworks.paths import resolve_inference_path
 from app.dataplane.fireworks.route_trace import build_route_transform_trace
 
-from app.products.openai.fireworks_native.responses import build_responses_adapter, validate_responses_body
+from app.products.openai.fireworks_native.responses import build_responses_adapter, is_sub2api_bridge_shape, validate_responses_body
 from app.products.openai.responses_priority_fallback import build_priority_chat_payload, is_priority_responses_fallback_eligible, synthesize_responses_from_chat
-from app.products.openai.responses_stream import ResponsesSSECanonicalizer
+from app.products.openai.responses_stream import ResponsesSSECanonicalizer, strip_reasoning_output_items
 from app.products.openai.errors import OpenAIRequestError, openai_error_response_json
 from app.products.openai.proxy_common import (
     build_proxy_context_from_body,
@@ -157,6 +157,8 @@ async def _handle_responses(request: Request):
     if bool(payload.get("stream")):
         suppress_reasoning = isinstance(payload.get("metadata"), dict) and payload["metadata"].pop("fireworks2api_suppress_reasoning_stream", False) is True
         proxy_kwargs["stream_transform_factory"] = (lambda: ResponsesSSECanonicalizer(suppress_reasoning=suppress_reasoning, sub2api_bridge_compat=True))
+    elif is_sub2api_bridge_shape(body):
+        proxy_kwargs["response_transform"] = strip_reasoning_output_items
     return await proxy_fireworks_request(context, **proxy_kwargs)
 
 

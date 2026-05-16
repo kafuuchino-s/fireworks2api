@@ -190,6 +190,44 @@ def test_create_response_retries_without_missing_previous_response_id(monkeypatc
     assert deleted == ["resp_missing"]
 
 
+def test_create_responses_non_stream_strips_bridge_reasoning_output(monkeypatch: MonkeyPatch) -> None:
+    _require_auth(monkeypatch)
+
+    captured: dict[str, object] = {}
+
+    async def fake_build_proxy_context(request, body):
+        ctx = _mock_context()
+        ctx.body = body
+        return ctx
+
+    async def fake_proxy_fireworks_request(context, **kwargs):
+        captured.update(kwargs)
+        return JSONResponse({"id": "resp_1", "object": "response"})
+
+    monkeypatch.setattr(responses_mod, "build_proxy_context_from_body", fake_build_proxy_context)
+    monkeypatch.setattr(responses_mod, "proxy_fireworks_request", fake_proxy_fireworks_request)
+
+    response = client.post(
+        "/v1/responses",
+        headers={"Authorization": "Bearer token"},
+        json={"model": "test", "input": "hello", "include": ["reasoning.encrypted_content"]},
+    )
+
+    assert response.status_code == 200
+    transform = captured["response_transform"]
+    transformed = transform(
+        {
+            "id": "resp_1",
+            "object": "response",
+            "output": [
+                {"type": "reasoning", "id": "rs_1", "summary": []},
+                {"type": "message", "id": "msg_1"},
+            ],
+        }
+    )
+    assert transformed["output"] == [{"type": "message", "id": "msg_1"}]
+
+
 @pytest.mark.parametrize(
     ("upstream_base_url", "expected_base_path"),
     [

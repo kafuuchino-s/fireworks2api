@@ -148,6 +148,18 @@ def test_validate_responses_body_accepts_output_text_continuation_item() -> None
     )
 
 
+def test_validate_responses_body_accepts_codex_reasoning_input_item() -> None:
+    native_responses.validate_responses_body(
+        {
+            "model": "test",
+            "input": [
+                {"type": "reasoning", "id": "rs_1", "summary": []},
+                {"role": "user", "content": "continue"},
+            ],
+        }
+    )
+
+
 def test_validate_responses_body_accepts_valid_input_image_part() -> None:
     native_responses.validate_responses_body(
         {
@@ -255,6 +267,31 @@ def test_build_responses_adapter_normalizes_output_text_continuation() -> None:
 
     assert payload["input"][0] == {"role": "assistant", "content": [{"type": "input_text", "text": "prior answer"}]}
     assert payload["input"][1] == {"role": "assistant", "content": [{"type": "input_text", "text": "top level prior answer"}]}
+
+
+def test_build_responses_adapter_drops_codex_reasoning_input_items() -> None:
+    context = SimpleNamespace(
+        body={
+            "model": "test",
+            "input": [
+                {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "system"}]},
+                {"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "hidden"}]},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+            ],
+        },
+        settings=SimpleNamespace(affinity_hash_secret="affinity-secret", log_hash_secret="log-secret"),
+        request_headers={},
+        stable_key="stable",
+        resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/test"),
+    )
+
+    payload, _, report = native_responses.build_responses_adapter(context)
+
+    assert payload["input"] == [
+        {"role": "developer", "content": [{"type": "input_text", "text": "system"}]},
+        {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+    ]
+    assert any(change["field"] == "input" and change["type"] == "reasoning" for change in report["field_changes"])
 
 
 def test_build_responses_adapter_normalizes_sub2api_bridge_payload() -> None:
