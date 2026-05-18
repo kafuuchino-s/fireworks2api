@@ -464,11 +464,6 @@ def build_responses_adapter(context) -> tuple[dict[str, Any], dict[str, str], di
             payload["tool_choice"] = normalized_tool_choice
             field_changes.append({"field": "tool_choice", "action": "normalized", "to": "function.name"})
             warnings.append("tool_choice function shorthand was normalized for Fireworks Responses compatibility")
-    if payload.get("stream") is True and is_sub2api_bridge_shape(body):
-        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-        payload["metadata"] = {**metadata, "fireworks2api_suppress_reasoning_stream": True}
-        field_changes.append({"field": "reasoning", "action": "stream_suppressed", "scope": "sub2api_bridge"})
-        warnings.append("reasoning summary stream events will be suppressed for sub2api/Claude Code compatibility")
     if _responses_stream_needs_continuation_storage(body):
         if body.get("store") is not True:
             payload["store"] = True

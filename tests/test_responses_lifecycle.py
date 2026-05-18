@@ -440,8 +440,7 @@ def test_create_responses_stream_uses_sub2api_style_transform_for_bridge_shape(m
     assert response.status_code == 200
     transform = captured["stream_transform_factory"]()
     assert transform._sub2api_bridge_compat is True
-    assert transform._suppress_reasoning is True
-    assert transform._reasoning_fallback_to_text is True
+    assert transform._suppress_reasoning is False
 
 
 @pytest.mark.parametrize(

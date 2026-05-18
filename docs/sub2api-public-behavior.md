@@ -20,7 +20,7 @@ This is the critical path for the current deployed chain.
   - `response.function_call_arguments.done` carries the complete arguments when deltas were buffered.
   - early function `response.output_item.done` is suppressed until arguments are complete.
 - Message/content-part done events that can close the wrong downstream Anthropic block are not forwarded on the sub2api-facing stream.
-- Reasoning summary stream events from Fireworks are suppressed for sub2api bridge-shaped requests because sub2api/Claude Code can treat them as extra block pressure.
+- Reasoning summary stream events from Fireworks remain structured reasoning events. They must not be converted into `response.output_text.*` body text.
 - Streaming tool or continuation requests force `store=true`, so Fireworks `previous_response_id` continuations remain available.
 - With `previous_response_id`, replayed `function_call` items immediately followed by their `function_call_output` are reduced to the tool output.
 - If Fireworks reports `previous_response_id` not found before any client-visible output, delete the stale local binding and retry once without `previous_response_id`.

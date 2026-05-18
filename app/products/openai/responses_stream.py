@@ -62,13 +62,7 @@ class ResponsesSSECanonicalizer:
     content_block_start before content_block_delta.
     """
 
-    def __init__(
-        self,
-        *,
-        suppress_reasoning: bool = False,
-        sub2api_bridge_compat: bool = False,
-        reasoning_fallback_to_text: bool = False,
-    ) -> None:
+    def __init__(self, *, suppress_reasoning: bool = False, sub2api_bridge_compat: bool = False) -> None:
         self._buffer = ""
         self._started_indexes: set[int] = set()
         self._closed_indexes: set[int] = set()
@@ -80,7 +74,6 @@ class ResponsesSSECanonicalizer:
         self._reasoning_indexes: set[int] = set()
         self._suppress_reasoning = suppress_reasoning
         self._sub2api_bridge_compat = sub2api_bridge_compat or suppress_reasoning
-        self._reasoning_fallback_to_text = reasoning_fallback_to_text
 
     def feed(self, chunk: bytes) -> bytes:
         self._buffer += chunk.decode("utf-8", errors="ignore").replace("\r\n", "\n")
@@ -123,10 +116,6 @@ class ResponsesSSECanonicalizer:
         if event_type:
             payload = dict(payload)
             payload.setdefault("type", event_type)
-        if self._suppress_reasoning and self._reasoning_fallback_to_text:
-            converted = self._reasoning_summary_as_text(event_type, payload)
-            if converted is not None:
-                event_type, payload = converted
         payload = self._wrap_top_level_response(event_type, payload)
         payload = self._correct_tool_payload(event_type, payload)
         if self._suppress_reasoning:
@@ -245,21 +234,6 @@ class ResponsesSSECanonicalizer:
             return True
         item = payload.get("item")
         return isinstance(item, dict) and item.get("type") == "reasoning"
-
-    @staticmethod
-    def _reasoning_summary_as_text(
-        event_type: str | None,
-        payload: dict[str, Any],
-    ) -> tuple[str, dict[str, Any]] | None:
-        if event_type == "response.reasoning_summary_text.delta":
-            converted = dict(payload)
-            converted["type"] = "response.output_text.delta"
-            return "response.output_text.delta", converted
-        if event_type == "response.reasoning_summary_text.done":
-            converted = dict(payload)
-            converted["type"] = "response.output_text.done"
-            return "response.output_text.done", converted
-        return None
 
     def _is_unsafe_bridge_done_event(self, event_type: str | None, payload: dict[str, Any], output_index: int) -> bool:
         if event_type in {"response.output_text.done", "response.content_part.added", "response.content_part.done"}:

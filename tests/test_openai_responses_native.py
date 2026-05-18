@@ -351,7 +351,7 @@ def test_build_responses_adapter_normalizes_sub2api_chat_bridge_payload() -> Non
     assert any(change["field"] == "tool_choice" for change in report["field_changes"])
 
 
-def test_build_responses_adapter_marks_sub2api_bridge_stream_for_reasoning_suppression() -> None:
+def test_build_responses_adapter_keeps_sub2api_reasoning_structured() -> None:
     context = SimpleNamespace(
         body={
             "model": "test",
@@ -370,9 +370,9 @@ def test_build_responses_adapter_marks_sub2api_bridge_stream_for_reasoning_suppr
 
     payload, _, report = native_responses.build_responses_adapter(context)
 
-    assert payload["metadata"]["fireworks2api_suppress_reasoning_stream"] is True
     assert payload["store"] is True
-    assert any(change["field"] == "reasoning" for change in report["field_changes"])
+    assert "fireworks2api_suppress_reasoning_stream" not in (payload.get("metadata") or {})
+    assert not any(change["field"] == "reasoning" and change.get("action") == "stream_suppressed" for change in report["field_changes"])
     assert any(change["field"] == "store" and change["to"] is True for change in report["field_changes"])
 
 
