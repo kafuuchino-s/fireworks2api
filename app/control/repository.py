@@ -555,8 +555,22 @@ class AppRepository:
             enabled=bool(row["enabled"]),
         )
 
+    @staticmethod
+    def _request_log_is_error(data: dict[str, Any]) -> bool:
+        if data.get("error_type") is not None:
+            return True
+        status_code = data.get("status_code")
+        if status_code is None:
+            return True
+        try:
+            normalized = int(status_code)
+        except (TypeError, ValueError):
+            return True
+        return normalized < 200 or normalized >= 300
+
     def insert_request_log(self, data: dict[str, Any], retention: int) -> str:
         log_id = data.get("id") or str(uuid.uuid4())
+        latency_ms = data.get("latency_ms")
         columns = {
             "id": log_id,
             "timestamp": data.get("timestamp") or now_iso(),
@@ -583,6 +597,37 @@ class AppRepository:
             )
             conn.execute(
                 """
+                INSERT OR IGNORE INTO request_log_totals(id, updated_at)
+                VALUES (1, ?)
+                """,
+                (now_iso(),),
+            )
+            conn.execute(
+                """
+                UPDATE request_log_totals
+                SET
+                  request_count=request_count + 1,
+                  error_count=error_count + ?,
+                  input_tokens=input_tokens + ?,
+                  output_tokens=output_tokens + ?,
+                  cached_tokens=cached_tokens + ?,
+                  latency_ms_total=latency_ms_total + ?,
+                  latency_ms_count=latency_ms_count + ?,
+                  updated_at=?
+                WHERE id=1
+                """,
+                (
+                    1 if self._request_log_is_error(data) else 0,
+                    int(data.get("input_tokens") or 0),
+                    int(data.get("output_tokens") or 0),
+                    int(data.get("cached_tokens") or 0),
+                    int(latency_ms or 0) if latency_ms is not None else 0,
+                    1 if latency_ms is not None else 0,
+                    now_iso(),
+                ),
+            )
+            conn.execute(
+                """
                 DELETE FROM request_logs
                 WHERE id NOT IN (
                     SELECT id FROM request_logs ORDER BY timestamp DESC LIMIT ?
@@ -591,6 +636,42 @@ class AppRepository:
                 (retention,),
             )
         return log_id
+
+    def request_log_totals(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                  request_count,
+                  error_count,
+                  input_tokens,
+                  output_tokens,
+                  cached_tokens,
+                  latency_ms_total,
+                  latency_ms_count
+                FROM request_log_totals
+                WHERE id=1
+                """
+            ).fetchone()
+        if not row:
+            return {
+                "request_count": 0,
+                "error_count": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cached_tokens": 0,
+                "avg_latency_ms": 0,
+            }
+        latency_count = int(row["latency_ms_count"] or 0)
+        latency_total = int(row["latency_ms_total"] or 0)
+        return {
+            "request_count": int(row["request_count"] or 0),
+            "error_count": int(row["error_count"] or 0),
+            "input_tokens": int(row["input_tokens"] or 0),
+            "output_tokens": int(row["output_tokens"] or 0),
+            "cached_tokens": int(row["cached_tokens"] or 0),
+            "avg_latency_ms": int(latency_total / latency_count) if latency_count else 0,
+        }
 
     def record_transform_debug(self, payload: dict[str, Any], retention: int) -> None:
         log_id = payload.get("id") or str(uuid.uuid4())
@@ -772,7 +853,7 @@ class AppRepository:
                 """
                 SELECT
                   COUNT(*) AS request_count,
-                  SUM(CASE WHEN error_type IS NOT NULL THEN 1 ELSE 0 END) AS error_count,
+                  SUM(CASE WHEN error_type IS NOT NULL OR status_code IS NULL OR status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END) AS error_count,
                   COALESCE(SUM(input_tokens), 0) AS input_tokens,
                   COALESCE(SUM(output_tokens), 0) AS output_tokens,
                   COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
@@ -780,20 +861,30 @@ class AppRepository:
                 FROM request_logs
                 """
             ).fetchone()
-        input_tokens = int(stats["input_tokens"] or 0)
-        cached_tokens = int(stats["cached_tokens"] or 0)
+        totals = self.request_log_totals()
+        input_tokens = int(totals["input_tokens"] or 0)
+        cached_tokens = int(totals["cached_tokens"] or 0)
+        retained_input_tokens = int(stats["input_tokens"] or 0)
+        retained_cached_tokens = int(stats["cached_tokens"] or 0)
         return {
             "key_total": len(keys),
             "healthy_key_count": len(healthy),
             "cooldown_key_count": len(cooldown),
             "disabled_key_count": len([key for key in keys if not key.enabled]),
-            "request_count": int(stats["request_count"] or 0),
-            "error_count": int(stats["error_count"] or 0),
+            "request_count": int(totals["request_count"] or 0),
+            "error_count": int(totals["error_count"] or 0),
             "input_tokens": input_tokens,
-            "output_tokens": int(stats["output_tokens"] or 0),
+            "output_tokens": int(totals["output_tokens"] or 0),
             "cached_tokens": cached_tokens,
             "cache_hit_ratio": cached_tokens / input_tokens if input_tokens else 0,
-            "avg_latency_ms": int(stats["avg_latency_ms"] or 0),
+            "avg_latency_ms": int(totals["avg_latency_ms"] or 0),
+            "retained_request_count": int(stats["request_count"] or 0),
+            "retained_error_count": int(stats["error_count"] or 0),
+            "retained_input_tokens": retained_input_tokens,
+            "retained_output_tokens": int(stats["output_tokens"] or 0),
+            "retained_cached_tokens": retained_cached_tokens,
+            "retained_cache_hit_ratio": retained_cached_tokens / retained_input_tokens if retained_input_tokens else 0,
+            "retained_avg_latency_ms": int(stats["avg_latency_ms"] or 0),
         }
 
     def cache_analysis(self) -> dict[str, Any]:

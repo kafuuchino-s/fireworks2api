@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 SCHEMA = """
@@ -61,6 +61,18 @@ CREATE TABLE IF NOT EXISTS request_logs (
   status_code INTEGER,
   error_type TEXT,
   upstream_request_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS request_log_totals (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  request_count INTEGER NOT NULL DEFAULT 0,
+  error_count INTEGER NOT NULL DEFAULT 0,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cached_tokens INTEGER NOT NULL DEFAULT 0,
+  latency_ms_total INTEGER NOT NULL DEFAULT 0,
+  latency_ms_count INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS fireworks_key_snapshots (
@@ -282,11 +294,50 @@ def _migrate_transform_debug_logs(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE transform_debug_logs_old")
 
 
+def _seed_request_log_totals(conn: sqlite3.Connection) -> None:
+    existing = conn.execute("SELECT 1 FROM request_log_totals WHERE id=1").fetchone()
+    if existing:
+        return
+
+    row = conn.execute(
+        """
+        SELECT
+          COUNT(*) AS request_count,
+          SUM(CASE WHEN error_type IS NOT NULL OR status_code IS NULL OR status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END) AS error_count,
+          COALESCE(SUM(input_tokens), 0) AS input_tokens,
+          COALESCE(SUM(output_tokens), 0) AS output_tokens,
+          COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+          COALESCE(SUM(CASE WHEN latency_ms IS NOT NULL THEN latency_ms ELSE 0 END), 0) AS latency_ms_total,
+          SUM(CASE WHEN latency_ms IS NOT NULL THEN 1 ELSE 0 END) AS latency_ms_count
+        FROM request_logs
+        """
+    ).fetchone()
+    conn.execute(
+        """
+        INSERT INTO request_log_totals(
+          id, request_count, error_count, input_tokens, output_tokens, cached_tokens,
+          latency_ms_total, latency_ms_count, updated_at
+        )
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        """,
+        (
+            int(row["request_count"] or 0),
+            int(row["error_count"] or 0),
+            int(row["input_tokens"] or 0),
+            int(row["output_tokens"] or 0),
+            int(row["cached_tokens"] or 0),
+            int(row["latency_ms_total"] or 0),
+            int(row["latency_ms_count"] or 0),
+        ),
+    )
+
+
 def init_db(db_path: Path) -> None:
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
         _migrate_model_mappings(conn)
         _migrate_transform_debug_logs(conn)
+        _seed_request_log_totals(conn)
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, datetime('now'))",
             (SCHEMA_VERSION,),
