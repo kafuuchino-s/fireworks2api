@@ -47,8 +47,8 @@ def test_canonicalizer_can_suppress_reasoning_events_for_anthropic_bridges() -> 
     assert _events(text)[0]["type"] == "response.output_text.delta"
 
 
-def test_bridge_compat_strips_reasoning_from_completed_response_output() -> None:
-    canonicalizer = ResponsesSSECanonicalizer(sub2api_bridge_compat=True)
+def test_suppress_reasoning_strips_reasoning_from_completed_response_output() -> None:
+    canonicalizer = ResponsesSSECanonicalizer(suppress_reasoning=True)
 
     output = canonicalizer.feed(
         b'event: response.completed\n'
@@ -57,6 +57,43 @@ def test_bridge_compat_strips_reasoning_from_completed_response_output() -> None
 
     events = _events(output)
     assert events[0]["response"]["output"] == [{"type": "message", "id": "msg_1"}]
+
+
+def test_bridge_compat_preserves_reasoning_when_not_suppressed() -> None:
+    canonicalizer = ResponsesSSECanonicalizer(sub2api_bridge_compat=True)
+
+    output = canonicalizer.feed(
+        b'event: response.output_item.added\n'
+        b'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1"}}\n\n'
+    )
+    output += canonicalizer.feed(
+        b'event: response.reasoning_summary_text.delta\n'
+        b'data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"thinking"}\n\n'
+    )
+
+    events = _events(output)
+    assert [event["type"] for event in events] == ["response.output_item.added", "response.reasoning_summary_text.delta"]
+
+
+def test_suppressed_reasoning_can_fallback_to_text_delta() -> None:
+    canonicalizer = ResponsesSSECanonicalizer(
+        suppress_reasoning=True,
+        reasoning_fallback_to_text=True,
+    )
+
+    reasoning_start = canonicalizer.feed(
+        b'event: response.output_item.added\n'
+        b'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1"}}\n\n'
+    )
+    reasoning_delta = canonicalizer.feed(
+        b'event: response.reasoning_summary_text.delta\n'
+        b'data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"thinking"}\n\n'
+    )
+
+    assert reasoning_start == b""
+    events = _events(reasoning_delta)
+    assert events[0]["type"] == "response.output_text.delta"
+    assert events[0]["delta"] == "thinking"
 
 
 def test_bridge_compat_drops_message_done_events_that_close_current_block_globally() -> None:

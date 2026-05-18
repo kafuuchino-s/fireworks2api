@@ -363,7 +363,7 @@ def test_create_responses_stream_forwards_stream_and_cache_fields(monkeypatch: M
     assert captured["payload"]["stream"] is True
     stream_transform = captured["stream_transform_factory"]()
     assert stream_transform.__class__ is responses_mod.ResponsesSSECanonicalizer
-    assert stream_transform._sub2api_bridge_compat is True
+    assert stream_transform._sub2api_bridge_compat is False
     assert captured["payload"]["perf_metrics_in_response"] is True
     assert captured["payload"]["prompt_cache_key"] == "cache-1"
     assert captured["payload"]["prompt_cache_isolation_key"] == "iso-1"
@@ -371,7 +371,7 @@ def test_create_responses_stream_forwards_stream_and_cache_fields(monkeypatch: M
     assert response.text.startswith("data: {\"id\":\"resp_1\"}")
 
 
-def test_create_responses_stream_uses_sub2api_style_transform(monkeypatch: MonkeyPatch) -> None:
+def test_create_responses_stream_uses_plain_transform_by_default(monkeypatch: MonkeyPatch) -> None:
     _require_auth(monkeypatch)
 
     captured: dict[str, object] = {}
@@ -400,7 +400,48 @@ def test_create_responses_stream_uses_sub2api_style_transform(monkeypatch: Monke
     response = client.post("/v1/responses", headers={"Authorization": "Bearer token"}, json={"model": "test", "input": "hello", "stream": True})
 
     assert response.status_code == 200
-    assert captured["stream_transform_factory"]()._sub2api_bridge_compat is True
+    assert captured["stream_transform_factory"]()._sub2api_bridge_compat is False
+
+
+def test_create_responses_stream_uses_sub2api_style_transform_for_bridge_shape(monkeypatch: MonkeyPatch) -> None:
+    _require_auth(monkeypatch)
+
+    captured: dict[str, object] = {}
+    bridge_body = {
+        "model": "test",
+        "input": "hello",
+        "stream": True,
+        "include": ["reasoning.encrypted_content"],
+    }
+
+    async def fake_build_proxy_context(request, body):
+        return SimpleNamespace(
+            settings=SimpleNamespace(affinity_hash_secret="affinity-secret", log_hash_secret="log-secret", responses_cache_fields_enabled=True, request_log_retention=30),
+            repository=SimpleNamespace(insert_request_log=lambda *args, **kwargs: None),
+            body=bridge_body,
+            model_name="test",
+            resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/test"),
+            stable_key="stable",
+            route_key="route",
+            affinity_header="affinity",
+            request_headers={"authorization": "Bearer token"},
+            selected_keys=[SimpleNamespace(name="key-1", api_key="fw-test-key")],
+        )
+
+    async def fake_proxy_fireworks_request(context, **kwargs):
+        captured.update(kwargs)
+        return StreamingResponse(iter([b"data: {}\n\n"]), media_type="text/event-stream")
+
+    monkeypatch.setattr(responses_mod, "build_proxy_context_from_body", fake_build_proxy_context)
+    monkeypatch.setattr(responses_mod, "proxy_fireworks_request", fake_proxy_fireworks_request)
+
+    response = client.post("/v1/responses", headers={"Authorization": "Bearer token"}, json=bridge_body)
+
+    assert response.status_code == 200
+    transform = captured["stream_transform_factory"]()
+    assert transform._sub2api_bridge_compat is True
+    assert transform._suppress_reasoning is True
+    assert transform._reasoning_fallback_to_text is True
 
 
 @pytest.mark.parametrize(

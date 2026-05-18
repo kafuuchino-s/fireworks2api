@@ -154,10 +154,17 @@ async def _handle_responses(request: Request):
     retry_payload_on_error = _retry_without_previous_response_id_factory(context, payload)
     if retry_payload_on_error is not None:
         proxy_kwargs["retry_payload_on_error"] = retry_payload_on_error
+    bridge_compat = is_sub2api_bridge_shape(body)
     if bool(payload.get("stream")):
         suppress_reasoning = isinstance(payload.get("metadata"), dict) and payload["metadata"].pop("fireworks2api_suppress_reasoning_stream", False) is True
-        proxy_kwargs["stream_transform_factory"] = (lambda: ResponsesSSECanonicalizer(suppress_reasoning=suppress_reasoning, sub2api_bridge_compat=True))
-    elif is_sub2api_bridge_shape(body):
+        proxy_kwargs["stream_transform_factory"] = (
+            lambda: ResponsesSSECanonicalizer(
+                suppress_reasoning=suppress_reasoning,
+                sub2api_bridge_compat=bridge_compat,
+                reasoning_fallback_to_text=suppress_reasoning,
+            )
+        )
+    elif bridge_compat:
         proxy_kwargs["response_transform"] = strip_reasoning_output_items
     return await proxy_fireworks_request(context, **proxy_kwargs)
 
