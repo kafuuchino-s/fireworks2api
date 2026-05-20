@@ -28,6 +28,22 @@ def test_registry_includes_verified_capability_metadata() -> None:
     assert glm_fast["supported_functionality"]["image_input"] is False
 
 
+def test_registry_includes_deepseek_v4_flash_serverless_metadata() -> None:
+    flash = official_model_metadata("deepseek-v4-flash")
+    assert flash["upstream_model"] == "accounts/fireworks/models/deepseek-v4-flash"
+    assert flash["label"] == "DeepSeek V4 Flash"
+    assert flash["recommended"] is True
+    assert flash["supported_functionality"]["serverless"] is True
+    assert flash["supported_functionality"]["context_length"] == 1040000
+    assert flash["supported_functionality"]["function_calling"] is True
+    assert flash["supported_functionality"]["image_input"] is False
+    assert flash["pricing"]["standard"]["input"] == 0.14
+    assert flash["pricing"]["standard"]["cached_input"] == 0.03
+    assert flash["pricing"]["standard"]["output"] == 0.28
+    assert flash["source_url"] == "https://fireworks.ai/models/deepseek-ai/deepseek-v4-flash"
+    assert suggest_aliases_for_model("accounts/fireworks/models/deepseek-v4-flash") == ["deepseek-v4-flash"]
+
+
 def test_pricing_tiers_are_distinct_and_copied() -> None:
     standard = lookup_official_pricing("accounts/fireworks/models/kimi-k2p6", tier="standard")
     priority = lookup_official_pricing("accounts/fireworks/models/kimi-k2p6", tier="priority")
@@ -36,6 +52,7 @@ def test_pricing_tiers_are_distinct_and_copied() -> None:
     assert priority["input"] == 1.5
     assert fast["input"] == 2.0
     assert fast["output"] == 8.0
+    assert lookup_official_pricing("accounts/fireworks/models/deepseek-v4-flash", tier="standard")["input"] == 0.14
     assert lookup_official_pricing("accounts/fireworks/routers/glm-5p1-fast", tier="fast")["input"] == 2.8
     standard["input"] = 123
     assert lookup_official_pricing("accounts/fireworks/models/kimi-k2p6", tier="standard")["input"] == 0.95

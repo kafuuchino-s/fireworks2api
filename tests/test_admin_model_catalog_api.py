@@ -53,6 +53,15 @@ def test_admin_fireworks_models_default_official_registry(monkeypatch):
     assert body["source_type"] == "official_registry"
     assert body["count"] == len(body["items"])
     assert any(item["upstream_model"] == "accounts/fireworks/models/kimi-k2p6" for item in body["items"])
+    flash = next(item for item in body["items"] if item["upstream_model"] == "accounts/fireworks/models/deepseek-v4-flash")
+    assert flash["aliases"] == ["deepseek-v4-flash"]
+    assert flash["recommended"] is True
+    assert flash["already_mapped"] is True
+    assert flash["missing_aliases"] == []
+    assert flash["supported_functionality"]["serverless"] is True
+    assert flash["pricing"]["standard"]["input"] == 0.14
+    assert flash["pricing"]["standard"]["cached_input"] == 0.03
+    assert flash["pricing"]["standard"]["output"] == 0.28
 
 
 def test_admin_fireworks_models_live_inference_requires_key(monkeypatch):

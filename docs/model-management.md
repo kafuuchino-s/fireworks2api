@@ -49,6 +49,10 @@ For pricing-related model metadata, use the official Fireworks pricing page:
 
 - `https://docs.fireworks.ai/serverless/pricing`
 
+When the aggregate pricing page lags a newly released serverless model, a
+model-specific Fireworks library page may be used as the source URL for that
+entry's pricing and capability metadata.
+
 ## Operator guidance
 
 - Prefer the official registry for browsing and selecting models.

@@ -6,7 +6,8 @@ from typing import Any
 
 
 SOURCE_URL = "https://docs.fireworks.ai/serverless/pricing"
-SOURCE_CHECKED_AT = datetime(2026, 5, 7, tzinfo=timezone.utc)
+SOURCE_CHECKED_AT = datetime(2026, 5, 21, tzinfo=timezone.utc)
+DEEPSEEK_V4_FLASH_SOURCE_URL = "https://fireworks.ai/models/deepseek-ai/deepseek-v4-flash"
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,17 @@ _OFFICIAL_MODELS: tuple[OfficialFireworksModel, ...] = (
     ),
     OfficialFireworksModel("accounts/fireworks/models/kimi-k2p5", "Kimi K2.5", "text", True, "accounts/fireworks/models/kimi-k2p5", ("kimi-k2.5",), _functionality(262144, tools=True, image=True), {"standard": _pricing(0.6, 0.1, 3.0)}),
     OfficialFireworksModel("accounts/fireworks/models/deepseek-v4-pro", "DeepSeek V4 Pro", "text", True, "accounts/fireworks/models/deepseek-v4-pro", ("deepseek-v4-pro",), _functionality(1048576, tools=True, image=False), {"standard": _pricing(1.74, 0.145, 3.48)}),
+    OfficialFireworksModel(
+        "accounts/fireworks/models/deepseek-v4-flash",
+        "DeepSeek V4 Flash",
+        "text",
+        True,
+        "accounts/fireworks/models/deepseek-v4-flash",
+        ("deepseek-v4-flash",),
+        _functionality(1040000, tools=True, image=False),
+        {"standard": _pricing(0.14, 0.03, 0.28)},
+        source_url=DEEPSEEK_V4_FLASH_SOURCE_URL,
+    ),
     OfficialFireworksModel("accounts/fireworks/models/deepseek-v3", "DeepSeek V3 family", "text", True, "accounts/fireworks/models/deepseek-v3", ("deepseek-v3",), _functionality(), {"standard": _pricing(0.56, 0.28, 1.68)}),
     OfficialFireworksModel("accounts/fireworks/models/glm-5p1", "GLM 5.1", "text", True, "accounts/fireworks/models/glm-5p1", ("glm-5.1",), _functionality(202752, tools=True, image=False), {"standard": _pricing(1.4, 0.26, 4.4), "priority": _pricing(2.1, 0.39, 6.6)}),
     OfficialFireworksModel("accounts/fireworks/routers/glm-5p1-fast", "GLM 5.1 Fast router", "text", True, "accounts/fireworks/routers/glm-5p1-fast", ("glm-5.1-fast",), _functionality(202752, tools=True, image=False), {"fast": _pricing(2.8, 0.52, 8.8)}),

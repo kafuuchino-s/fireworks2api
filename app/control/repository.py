@@ -89,6 +89,7 @@ DEFAULT_MODELS = [
     ModelMapping("glm-5.1", "accounts/fireworks/models/glm-5p1"),
     ModelMapping("glm-5.1-fast", "accounts/fireworks/routers/glm-5p1-fast"),
     ModelMapping("deepseek-v4-pro", "accounts/fireworks/models/deepseek-v4-pro"),
+    ModelMapping("deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-flash"),
     ModelMapping("MiniMax-M2.7", "accounts/fireworks/models/minimax-m2p7"),
 ]
 
