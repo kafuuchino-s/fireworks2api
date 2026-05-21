@@ -15,12 +15,21 @@ from .common import build_adapter_headers
 
 _RESPONSES_TOOL_TYPES = {"function", "mcp", "sse", "python", "web_search"}
 _RESPONSES_INPUT_PART_TYPES = {"text", "input_text", "output_text", "input_image", "image"}
+_RESPONSES_TEXT_PART_TYPES = {"text", "input_text", "output_text"}
 _RESPONSES_OUTPUT_ITEM_TYPES = {"tool_output", "function_call"}
 _OPENAI_RESPONSES_ACCEPT_DROP_FIELDS = {"stream_options"}
 
 
 def _is_nonempty_str(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _is_empty_text_part(part: Any) -> bool:
+    return (
+        isinstance(part, dict)
+        and part.get("type") in _RESPONSES_TEXT_PART_TYPES
+        and not _is_nonempty_str(part.get("text"))
+    )
 
 
 def _normalize_responses_input_part(part: dict[str, Any]) -> dict[str, Any]:
@@ -48,13 +57,19 @@ def _normalize_responses_input_part(part: dict[str, Any]) -> dict[str, Any]:
     return part
 
 
-def _normalize_responses_input_item(item: dict[str, Any]) -> dict[str, Any]:
+def _normalize_responses_input_item(
+    item: dict[str, Any], *, drop_empty_text_parts: bool = False
+) -> tuple[dict[str, Any], int]:
+    dropped_empty_text_parts = 0
     if item.get("type") == "output_text":
-        return {"role": "assistant", "content": [{"type": "input_text", "text": item["text"]}]}
+        return (
+            {"role": "assistant", "content": [{"type": "input_text", "text": item["text"]}]},
+            dropped_empty_text_parts,
+        )
     if item.get("type") == "function_call_output":
-        return item
+        return item, dropped_empty_text_parts
     if item.get("type") == "function_call":
-        return item
+        return item, dropped_empty_text_parts
     if item.get("type") == "message":
         item = {key: value for key, value in item.items() if key != "type"}
     content = item.get("content")
@@ -62,6 +77,10 @@ def _normalize_responses_input_item(item: dict[str, Any]) -> dict[str, Any]:
         normalized_content = []
         changed = False
         for part in content:
+            if drop_empty_text_parts and _is_empty_text_part(part):
+                dropped_empty_text_parts += 1
+                changed = True
+                continue
             if isinstance(part, dict) and part.get("type") in {"input_image", "image", "output_text"}:
                 normalized_content.append(_normalize_responses_input_part(part))
                 changed = True
@@ -70,18 +89,28 @@ def _normalize_responses_input_item(item: dict[str, Any]) -> dict[str, Any]:
         if changed:
             item = dict(item)
             item["content"] = normalized_content
-    return item
+    return item, dropped_empty_text_parts
 
 
-def _normalize_responses_input_items(input_items: list[Any]) -> tuple[list[Any], int]:
+def _normalize_responses_input_items(
+    input_items: list[Any], *, drop_empty_text_parts: bool = False
+) -> tuple[list[Any], int, int]:
     normalized: list[Any] = []
     dropped_reasoning = 0
+    dropped_empty_text_parts = 0
     for item in input_items:
         if isinstance(item, dict) and item.get("type") == "reasoning":
             dropped_reasoning += 1
             continue
-        normalized.append(_normalize_responses_input_item(item) if isinstance(item, dict) else item)
-    return normalized, dropped_reasoning
+        if isinstance(item, dict):
+            normalized_item, item_dropped_empty_text_parts = _normalize_responses_input_item(
+                item, drop_empty_text_parts=drop_empty_text_parts
+            )
+            normalized.append(normalized_item)
+            dropped_empty_text_parts += item_dropped_empty_text_parts
+        else:
+            normalized.append(item)
+    return normalized, dropped_reasoning, dropped_empty_text_parts
 
 
 def _normalize_previous_response_tool_replay(input_items: Any, previous_response_id: Any) -> Any:
@@ -196,7 +225,9 @@ def _validate_responses_input_part(part: Any, *, item_index: int, part_index: in
             raise_openai_error("input_image.detail must be a string", param=f"input[{item_index}].content[{part_index}].image_url.detail", code="invalid_request_error")
 
 
-def _validate_responses_input_message(message: Any, *, index: int) -> None:
+def _validate_responses_input_message(
+    message: Any, *, index: int, allow_empty_text_parts: bool = False
+) -> None:
     if not isinstance(message, dict) or not message:
         raise_openai_error("input list items must be message objects", param=f"input[{index}]", code="invalid_request_error")
     item_type = message.get("type")
@@ -242,13 +273,22 @@ def _validate_responses_input_message(message: Any, *, index: int) -> None:
     if isinstance(content, list):
         if not content:
             raise_openai_error("message content must not be empty", param=f"input[{index}].content", code="invalid_request_error")
+        parts_to_validate = [
+            part
+            for part in content
+            if not (allow_empty_text_parts and _is_empty_text_part(part))
+        ]
+        if not parts_to_validate:
+            raise_openai_error("message content must not be empty", param=f"input[{index}].content", code="invalid_request_error")
         for part_index, part in enumerate(content):
+            if allow_empty_text_parts and _is_empty_text_part(part):
+                continue
             _validate_responses_input_part(part, item_index=index, part_index=part_index)
         return
     raise_openai_error("message content must be a string or list of parts", param=f"input[{index}].content", code="invalid_request_error")
 
 
-def _validate_responses_input(value: Any) -> None:
+def _validate_responses_input(value: Any, *, allow_empty_text_parts: bool = False) -> None:
     if isinstance(value, str):
         if not value:
             raise_openai_error("'input' must not be empty", param="input", code="invalid_request_error")
@@ -257,7 +297,7 @@ def _validate_responses_input(value: Any) -> None:
         if not value:
             raise_openai_error("'input' must not be empty", param="input", code="invalid_request_error")
         for index, item in enumerate(value):
-            _validate_responses_input_message(item, index=index)
+            _validate_responses_input_message(item, index=index, allow_empty_text_parts=allow_empty_text_parts)
         return
     raise_openai_error("'input' must be a string or non-empty list of objects/messages", param="input", code="invalid_request_error")
 
@@ -343,7 +383,9 @@ def _validate_responses_tool(tool: Any, *, index: int) -> None:
 
 def validate_responses_body(body: dict[str, Any]) -> None:
     _require_present(body, "model")
-    _validate_responses_input(_require_present(body, "input"))
+    _validate_responses_input(
+        _require_present(body, "input"), allow_empty_text_parts=is_sub2api_bridge_shape(body)
+    )
     if "previous_response_id" in body and not isinstance(body["previous_response_id"], str):
         raise_openai_error("'previous_response_id' must be a string", param="previous_response_id", code="invalid_request_error")
     if "previous_response_id" in body and not body["previous_response_id"].strip():
@@ -433,10 +475,26 @@ def build_responses_adapter(context) -> tuple[dict[str, Any], dict[str, str], di
     field_changes: list[dict[str, Any]] = []
     warnings: list[str] = []
     if isinstance(payload.get("input"), list):
-        payload["input"], dropped_reasoning = _normalize_responses_input_items(payload["input"])
+        payload["input"], dropped_reasoning, dropped_empty_text_parts = (
+            _normalize_responses_input_items(
+                payload["input"], drop_empty_text_parts=is_sub2api_bridge_shape(body)
+            )
+        )
         if dropped_reasoning:
             field_changes.append({"field": "input", "action": "dropped", "type": "reasoning", "count": dropped_reasoning})
             warnings.append("reasoning input items were dropped before forwarding to Fireworks Responses")
+        if dropped_empty_text_parts:
+            field_changes.append(
+                {
+                    "field": "input.content",
+                    "action": "dropped",
+                    "type": "empty_text",
+                    "count": dropped_empty_text_parts,
+                }
+            )
+            warnings.append(
+                "empty text content parts were dropped for sub2api Responses compatibility"
+            )
         normalized_replay = _normalize_previous_response_tool_replay(payload["input"], body.get("previous_response_id"))
         if normalized_replay != payload["input"]:
             payload["input"] = normalized_replay
