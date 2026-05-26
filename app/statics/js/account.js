@@ -1,4 +1,4 @@
-let state = { overview: {}, keys: [], quotaSummaries: {}, quotaPool: null, editing: null };
+let state = { overview: {}, keys: [], quotaSummaries: {}, quotaPool: null, quotaRefreshInProgress: false, quotaRefreshError: null, editing: null };
 
 const $ = id => document.getElementById(id);
 
@@ -112,6 +112,8 @@ function quotaCell(key) {
   if (blocking) meta.push(t(`account.quota.status.${quotaStatus(q)}`) || t('account.sla.quotaBlocked'));
   if (stale) meta.push(t('account.quota.stale'));
   if (refreshError) meta.push(t('account.quota.refreshError'));
+  if (state.quotaRefreshInProgress && (stale || q.source === 'missing')) meta.push(t('account.quota.refreshing'));
+  if (q.monthly_spend_updated_at) meta.push(`${t('account.quota.updatedAt')} ${compactTime(q.monthly_spend_updated_at)}`);
   if (q.last_refreshed_at) meta.push(compactTime(q.last_refreshed_at));
   const bar = hasPercent ? `<div class="quota-meter-track"><div class="quota-meter-fill" style="width:${percent == null ? 0 : percent.toFixed(0)}%"></div></div>` : '';
   const pctText = percent == null ? '' : `${t('account.quota.usedShort') || t('account.quota.used')} ${Math.round(percent)}%`;
@@ -148,12 +150,18 @@ function normalizeQuotaEntry(raw) {
     monthly_remaining: raw.monthly_remaining ?? summary.monthly_remaining ?? summary.remaining,
     serverless_rpm_limit: raw.serverless_rpm_limit ?? summary.serverless_rpm_limit,
     serverless_rpm_usage: raw.serverless_rpm_usage ?? summary.serverless_rpm_usage,
+    monthly_spend_updated_at: raw.monthly_spend_updated_at ?? summary.monthly_spend_updated_at,
+    serverless_rpm_updated_at: raw.serverless_rpm_updated_at ?? summary.serverless_rpm_updated_at,
     source: raw.source ?? summary.source,
     stale: !!(raw.stale ?? summary.stale),
     last_refreshed_at: raw.last_refreshed_at ?? summary.last_refreshed_at,
     stale_after: raw.stale_after ?? summary.stale_after,
     refresh_status: raw.refresh_status ?? summary.refresh_status,
     last_refresh_error_type: raw.last_refresh_error_type ?? summary.last_refresh_error_type,
+    refresh_started_at: raw.refresh_started_at ?? summary.refresh_started_at,
+    last_successful_refresh_at: raw.last_successful_refresh_at ?? summary.last_successful_refresh_at,
+    consecutive_refresh_failures: raw.consecutive_refresh_failures ?? summary.consecutive_refresh_failures,
+    next_refresh_after: raw.next_refresh_after ?? summary.next_refresh_after,
     quota_status: raw.quota_status ?? summary.quota_status,
     items: itemCount,
   };
@@ -321,6 +329,8 @@ function renderPoolQuota() {
   if (summary.stale_count > 0) meta.push(t('account.poolQuota.staleSources', { count: num(summary.stale_count) }));
   if (summary.refresh_error_count > 0) meta.push(t('account.poolQuota.refreshErrors', { count: num(summary.refresh_error_count) }));
   if (summary.unavailable_count > 0) meta.push(t('account.poolQuota.unavailableSources', { count: num(summary.unavailable_count) }));
+  if (state.quotaRefreshInProgress) meta.push(t('account.quota.refreshing'));
+  if (state.quotaRefreshError) meta.push(t('account.quota.refreshError'));
   $('pool-quota-meta').textContent = meta.join(' · ');
 }
 
@@ -343,6 +353,7 @@ function quotaText(key) {
   if (q.serverless_rpm_limit != null) secondary.push(`RPM ${q.serverless_rpm_usage != null ? `${q.serverless_rpm_usage} / ` : ''}${q.serverless_rpm_limit}`);
   if (q.stale) freshness.push(t('account.quota.stale'));
   if (q.refresh_status === 'error') freshness.push(t('account.quota.refreshError'));
+  if (q.monthly_spend_updated_at) freshness.push(`${t('account.quota.updatedAt')} ${compactTime(q.monthly_spend_updated_at)}`);
   const refreshedAt = compactTime(q.last_refreshed_at);
   if (refreshedAt) freshness.push(refreshedAt);
   if (!main.length && !secondary.length) {
@@ -428,24 +439,70 @@ function removeDeletedKeysFromView(items = []) {
   render();
 }
 
+function applyQuotaPayload(quotaRes) {
+  state.quotaSummaries = extractQuotaMap(quotaRes);
+  state.quotaPool = normalizePoolSummary(quotaRes?.pool_summary) || buildPoolQuotaSummary();
+  state.quotaRefreshInProgress = !!quotaRes?.refresh_in_progress;
+  state.quotaRefreshError = null;
+}
+
+function shouldAutoRefreshQuota(quotaRes) {
+  const items = Array.isArray(quotaRes) ? quotaRes : (quotaRes?.items || []);
+  if (!items.length && state.keys.some(key => key.enabled !== false)) return true;
+  return items.some(item => {
+    if (item?.enabled === false) return false;
+    const status = String(item?.quota_status || item?.status || '').toLowerCase();
+    const refreshStatus = String(item?.refresh_status || '').toLowerCase();
+    return item?.stale || item?.source === 'missing' || ['partial', 'pending'].includes(refreshStatus) || !item?.last_refreshed_at || status === 'unavailable';
+  });
+}
+
+async function refreshQuota(mode, options = {}) {
+  const background = !!options.background;
+  state.quotaRefreshInProgress = true;
+  state.quotaRefreshError = null;
+  render();
+  try {
+    const quotaRes = await adminFetch(`/admin/fireworks/keys/quota-summaries?refresh=${mode}`);
+    applyQuotaPayload(quotaRes);
+    render();
+    if (mode === 'force') showToast(t('account.quota.refreshSuccess'), 'success');
+  } catch (quotaErr) {
+    state.quotaRefreshInProgress = false;
+    state.quotaRefreshError = quotaErr;
+    if (quotaErr?.status !== 404) console.warn('quota summaries unavailable', quotaErr);
+    render();
+    if (!background || mode === 'force') showToast(quotaErr.message || t('account.quota.refreshFailed'), 'error');
+  }
+}
+
 async function loadData(options = {}) {
   const forceQuota = !!options.forceQuota;
   try {
-    state.overview = await adminFetch('/admin/overview');
-    const res = await adminFetch('/admin/keys');
+    const [overviewRes, keysRes, quotaRes] = await Promise.allSettled([
+      adminFetch('/admin/overview'),
+      adminFetch('/admin/keys'),
+      adminFetch('/admin/fireworks/keys/quota-summaries?refresh=none'),
+    ]);
+    if (overviewRes.status === 'rejected') throw overviewRes.reason;
+    if (keysRes.status === 'rejected') throw keysRes.reason;
+    state.overview = overviewRes.value || {};
+    const res = keysRes.value;
     state.keys = Array.isArray(res) ? res : (res.items || res.keys || []);
-    render();
-    try {
-      const quotaRes = await adminFetch(`/admin/fireworks/keys/quota-summaries?refresh=${forceQuota ? 'force' : 'auto'}`);
-      state.quotaSummaries = extractQuotaMap(quotaRes);
-      state.quotaPool = normalizePoolSummary(quotaRes?.pool_summary) || buildPoolQuotaSummary();
-    } catch (quotaErr) {
-      state.quotaSummaries = {};
-      state.quotaPool = null;
-      if (quotaErr?.status !== 404) console.warn('quota summaries unavailable', quotaErr);
+    let cachedQuota = null;
+    if (quotaRes.status === 'fulfilled') {
+      cachedQuota = quotaRes.value;
+      applyQuotaPayload(cachedQuota);
+    } else {
+      state.quotaRefreshError = quotaRes.reason;
+      if (quotaRes.reason?.status !== 404) console.warn('quota summaries unavailable', quotaRes.reason);
     }
     render();
-    if (forceQuota) showToast(t('account.quota.refreshSuccess'), 'success');
+    if (forceQuota) {
+      await refreshQuota('force');
+    } else if (shouldAutoRefreshQuota(cachedQuota)) {
+      refreshQuota('auto', { background: true });
+    }
   } catch (e) { showToast(e.message || t('common.loadingFailed'), 'error'); }
 }
 

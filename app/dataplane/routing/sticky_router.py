@@ -139,33 +139,32 @@ def _account_gate_for_snapshot(snapshot: Any, now: datetime | None = None) -> Ac
     fresh = snapshot_is_fresh(snapshot, now)
     exhausted = False
     unusable = False
-    if fresh:
-        if quota_status in {"quota_exhausted", "exhausted", "over_quota", "billing_required"}:
-            exhausted = True
-        if quota_status in {"unusable", "disabled", "suspended"} or account_state in {"disabled", "suspended", "closed"} or suspend_state in {"suspended", "disabled"}:
-            unusable = True
-        if quota_status_code == 402:
-            exhausted = True
-        elif quota_summary:
-            try:
-                summary = json.loads(quota_summary) if isinstance(quota_summary, str) else quota_summary
-            except (TypeError, ValueError):
-                summary = {}
-            if isinstance(summary, dict):
-                remaining = summary.get("monthly_remaining")
-                budget = summary.get("monthly_budget")
-                used = summary.get("monthly_used")
-                if remaining is not None:
-                    try:
-                        exhausted = float(remaining) <= 0
-                    except (TypeError, ValueError):
-                        exhausted = False
-                elif budget is not None and used is not None:
-                    try:
-                        exhausted = float(budget) - float(used) <= 0
-                    except (TypeError, ValueError):
-                        exhausted = False
-    return AccountGate(account_id=account_id, blocked=fresh and (exhausted or unusable), reason=quota_status or None)
+    if quota_status in {"quota_exhausted", "exhausted", "over_quota", "billing_required", "auth_error"}:
+        exhausted = True
+    if quota_status in {"unusable", "disabled", "suspended"} or account_state in {"disabled", "suspended", "closed"} or suspend_state in {"suspended", "disabled"}:
+        unusable = True
+    if quota_status_code in {402, 412}:
+        exhausted = True
+    if quota_summary:
+        try:
+            summary = json.loads(quota_summary) if isinstance(quota_summary, str) else quota_summary
+        except (TypeError, ValueError):
+            summary = {}
+        if isinstance(summary, dict):
+            remaining = summary.get("monthly_remaining")
+            budget = summary.get("monthly_budget")
+            used = summary.get("monthly_used")
+            if remaining is not None:
+                try:
+                    exhausted = exhausted or float(remaining) <= 0
+                except (TypeError, ValueError):
+                    pass
+            elif budget is not None and used is not None:
+                try:
+                    exhausted = exhausted or float(budget) - float(used) <= 0
+                except (TypeError, ValueError):
+                    pass
+    return AccountGate(account_id=account_id, blocked=fresh and (exhausted or unusable) or (not fresh and (exhausted or unusable)), reason=quota_status or None)
 
 
 def select_candidate_keys(

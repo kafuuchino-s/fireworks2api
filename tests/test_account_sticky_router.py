@@ -49,13 +49,13 @@ def test_same_route_key_is_stable() -> None:
     assert [key.fingerprint for key in first] == [key.fingerprint for key in second]
 
 
-def test_stale_exhausted_quota_does_not_block() -> None:
+def test_stale_exhausted_quota_stays_blocked() -> None:
     now = datetime.now(UTC)
     keys = [_key("k1", "fp-1"), _key("k2", "fp-2")]
     snapshots = {"fp-1": _snapshot("acct-a", stale_after=now - timedelta(minutes=1), quota_status="exhausted")}
 
     selected = select_candidate_keys(keys, "route", 10, snapshots_by_fingerprint=snapshots, now=now)
-    assert {key.fingerprint for key in selected.selected_keys} == {"fp-1", "fp-2"}
+    assert {key.fingerprint for key in selected.selected_keys} == {"fp-2"}
 
 
 def test_fresh_exhausted_quota_blocks_siblings() -> None:

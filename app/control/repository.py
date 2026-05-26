@@ -59,6 +59,30 @@ class FireworksKeySnapshot:
     refresh_status: str | None = None
     last_refresh_error_type: str | None = None
     last_refresh_error: str | None = None
+    refresh_started_at: str | None = None
+    last_successful_refresh_at: str | None = None
+    consecutive_refresh_failures: int | None = None
+    next_refresh_after: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(frozen=True)
+class FireworksAccountQuotaSnapshot:
+    account_id: str
+    quota_supported: bool | None = None
+    quota_status: str | None = None
+    quota_status_code: int | None = None
+    quota_summary_json: str | None = None
+    quota_items_json: str | None = None
+    quota_refreshed_at: str | None = None
+    stale_after: str | None = None
+    refresh_status: str | None = None
+    last_refresh_error_type: str | None = None
+    last_refresh_error: str | None = None
+    refresh_started_at: str | None = None
+    last_successful_refresh_at: str | None = None
+    consecutive_refresh_failures: int = 0
+    next_refresh_after: str | None = None
     updated_at: str | None = None
 
 
@@ -378,6 +402,62 @@ class AppRepository:
                 (scope, model, session_hash),
             )
 
+    @staticmethod
+    def _key_snapshot_from_row(row: sqlite3.Row | None) -> FireworksKeySnapshot | None:
+        if not row:
+            return None
+        payload = dict(row)
+        if payload.get("quota_supported") is not None:
+            payload["quota_supported"] = bool(payload["quota_supported"])
+        if payload.get("consecutive_refresh_failures") is not None:
+            payload["consecutive_refresh_failures"] = int(payload["consecutive_refresh_failures"])
+        return FireworksKeySnapshot(**payload)
+
+    @staticmethod
+    def _account_quota_snapshot_from_row(row: sqlite3.Row | None) -> FireworksAccountQuotaSnapshot | None:
+        if not row:
+            return None
+        payload = dict(row)
+        if payload.get("quota_supported") is not None:
+            payload["quota_supported"] = bool(payload["quota_supported"])
+        if payload.get("consecutive_refresh_failures") is not None:
+            payload["consecutive_refresh_failures"] = int(payload["consecutive_refresh_failures"])
+        return FireworksAccountQuotaSnapshot(**payload)
+
+    @staticmethod
+    def _merged_key_snapshot_select(where_clause: str = "") -> str:
+        return f"""
+            SELECT
+              k.key_fingerprint,
+              k.account_id,
+              k.account_label,
+              k.account_state,
+              k.suspend_state,
+              COALESCE(a.quota_supported, k.quota_supported) AS quota_supported,
+              COALESCE(a.quota_status, k.quota_status) AS quota_status,
+              COALESCE(a.quota_status_code, k.quota_status_code) AS quota_status_code,
+              COALESCE(a.quota_summary_json, k.quota_summary_json) AS quota_summary_json,
+              COALESCE(a.quota_items_json, k.quota_items_json) AS quota_items_json,
+              k.account_refreshed_at,
+              COALESCE(a.quota_refreshed_at, k.quota_refreshed_at) AS quota_refreshed_at,
+              COALESCE(a.stale_after, k.stale_after) AS stale_after,
+              COALESCE(a.refresh_status, k.refresh_status) AS refresh_status,
+              COALESCE(a.last_refresh_error_type, k.last_refresh_error_type) AS last_refresh_error_type,
+              COALESCE(a.last_refresh_error, k.last_refresh_error) AS last_refresh_error,
+              a.refresh_started_at,
+              a.last_successful_refresh_at,
+              a.consecutive_refresh_failures,
+              a.next_refresh_after,
+              COALESCE(a.updated_at, k.updated_at) AS updated_at
+            FROM fireworks_key_snapshots k
+            LEFT JOIN fireworks_account_quota_snapshots a
+              ON a.account_id = CASE
+                WHEN k.account_id LIKE 'accounts/%' THEN SUBSTR(k.account_id, 10)
+                ELSE k.account_id
+              END
+            {where_clause}
+        """
+
     def upsert_fireworks_key_snapshot(self, snapshot: dict[str, Any]) -> None:
         ts = now_iso()
         columns = {
@@ -413,22 +493,122 @@ class AppRepository:
                 """,
                 (
                     columns.get("key_fingerprint"), columns.get("account_id"), columns.get("account_label"), columns.get("account_state"),
-                    columns.get("suspend_state"), int(columns["quota_supported"]) if columns.get("quota_supported") is not None else None,
+                    columns.get("suspend_state"), int(columns.get("quota_supported")) if columns.get("quota_supported") is not None else None,
                     columns.get("quota_status"), columns.get("quota_status_code"), columns.get("quota_summary_json"), columns.get("quota_items_json"),
                     columns.get("account_refreshed_at"), columns.get("quota_refreshed_at"), columns.get("stale_after"), columns.get("refresh_status"),
                     columns.get("last_refresh_error_type"), columns.get("last_refresh_error"), columns["updated_at"],
                 ),
             )
+        account_id = str(columns.get("account_id") or "").strip()
+        if account_id:
+            quota_fields = {
+                name: columns.get(name)
+                for name in (
+                    "quota_supported",
+                    "quota_status",
+                    "quota_status_code",
+                    "quota_summary_json",
+                    "quota_items_json",
+                    "quota_refreshed_at",
+                    "stale_after",
+                    "refresh_status",
+                    "last_refresh_error_type",
+                    "last_refresh_error",
+                    "refresh_started_at",
+                    "last_successful_refresh_at",
+                    "consecutive_refresh_failures",
+                    "next_refresh_after",
+                )
+                if name in columns
+            }
+            if any(value is not None for value in quota_fields.values()):
+                self.upsert_fireworks_account_quota_snapshot(account_id, quota_fields)
+
+    def upsert_fireworks_account_quota_snapshot(self, account_id: str, snapshot: dict[str, Any]) -> None:
+        account_id = self._normalize_account_id(account_id)
+        ts = now_iso()
+        refresh_status = snapshot.get("refresh_status")
+        last_successful = snapshot.get("last_successful_refresh_at")
+        if not last_successful and refresh_status == "ok":
+            last_successful = snapshot.get("quota_refreshed_at")
+        consecutive_failures = snapshot.get("consecutive_refresh_failures")
+        if consecutive_failures is None:
+            consecutive_failures = 0 if refresh_status == "ok" else None
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fireworks_account_quota_snapshots(
+                  account_id, quota_supported, quota_status, quota_status_code,
+                  quota_summary_json, quota_items_json, quota_refreshed_at, stale_after,
+                  refresh_status, last_refresh_error_type, last_refresh_error,
+                  refresh_started_at, last_successful_refresh_at, consecutive_refresh_failures,
+                  next_refresh_after, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0), ?, ?)
+                ON CONFLICT(account_id) DO UPDATE SET
+                  quota_supported=excluded.quota_supported,
+                  quota_status=excluded.quota_status,
+                  quota_status_code=excluded.quota_status_code,
+                  quota_summary_json=excluded.quota_summary_json,
+                  quota_items_json=excluded.quota_items_json,
+                  quota_refreshed_at=excluded.quota_refreshed_at,
+                  stale_after=excluded.stale_after,
+                  refresh_status=excluded.refresh_status,
+                  last_refresh_error_type=excluded.last_refresh_error_type,
+                  last_refresh_error=excluded.last_refresh_error,
+                  refresh_started_at=excluded.refresh_started_at,
+                  last_successful_refresh_at=COALESCE(excluded.last_successful_refresh_at, fireworks_account_quota_snapshots.last_successful_refresh_at),
+                  consecutive_refresh_failures=excluded.consecutive_refresh_failures,
+                  next_refresh_after=excluded.next_refresh_after,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    account_id,
+                    int(snapshot["quota_supported"]) if snapshot.get("quota_supported") is not None else None,
+                    snapshot.get("quota_status"),
+                    snapshot.get("quota_status_code"),
+                    snapshot.get("quota_summary_json"),
+                    snapshot.get("quota_items_json"),
+                    snapshot.get("quota_refreshed_at"),
+                    snapshot.get("stale_after"),
+                    refresh_status,
+                    snapshot.get("last_refresh_error_type"),
+                    snapshot.get("last_refresh_error"),
+                    snapshot.get("refresh_started_at"),
+                    last_successful,
+                    consecutive_failures,
+                    snapshot.get("next_refresh_after"),
+                    snapshot.get("updated_at") or ts,
+                ),
+            )
 
     def get_fireworks_key_snapshot(self, fingerprint: str) -> FireworksKeySnapshot | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM fireworks_key_snapshots WHERE key_fingerprint=?", (fingerprint,)).fetchone()
-        return FireworksKeySnapshot(**dict(row)) if row else None
+            row = conn.execute(
+                self._merged_key_snapshot_select("WHERE k.key_fingerprint=?"),
+                (fingerprint,),
+            ).fetchone()
+        return self._key_snapshot_from_row(row)
 
     def list_fireworks_key_snapshots(self) -> list[FireworksKeySnapshot]:
         with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM fireworks_key_snapshots ORDER BY key_fingerprint").fetchall()
-        return [FireworksKeySnapshot(**dict(row)) for row in rows]
+            rows = conn.execute(
+                self._merged_key_snapshot_select("ORDER BY k.key_fingerprint")
+            ).fetchall()
+        return [snapshot for row in rows if (snapshot := self._key_snapshot_from_row(row)) is not None]
+
+    def get_fireworks_account_quota_snapshot(self, account_id: str) -> FireworksAccountQuotaSnapshot | None:
+        account_id = self._normalize_account_id(account_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM fireworks_account_quota_snapshots WHERE account_id=?",
+                (account_id,),
+            ).fetchone()
+        return self._account_quota_snapshot_from_row(row)
+
+    def list_fireworks_account_quota_snapshots(self) -> list[FireworksAccountQuotaSnapshot]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM fireworks_account_quota_snapshots ORDER BY account_id").fetchall()
+        return [snapshot for row in rows if (snapshot := self._account_quota_snapshot_from_row(row)) is not None]
 
     def delete_fireworks_key_snapshot(self, fingerprint: str) -> None:
         with self._connect() as conn:
@@ -1285,4 +1465,13 @@ class AppRepository:
         return int(float(value))
 
 
-__all__ = ["KeyRecord", "ModelMapping", "AccountCooldownRecord", "DEFAULT_MODELS", "AppRepository", "now_iso"]
+__all__ = [
+    "KeyRecord",
+    "ModelMapping",
+    "FireworksKeySnapshot",
+    "FireworksAccountQuotaSnapshot",
+    "AccountCooldownRecord",
+    "DEFAULT_MODELS",
+    "AppRepository",
+    "now_iso",
+]

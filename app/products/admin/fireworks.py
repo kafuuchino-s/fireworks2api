@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import random
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -22,7 +25,65 @@ from .deps import _repository, _settings
 
 QUOTA_TTL_SECONDS = 30 * 60
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+_quota_refresh_lock: asyncio.Lock | None = None
+_account_refresh_locks: dict[str, asyncio.Lock] = {}
+_refresh_state: dict[str, Any] = {
+    "refresh_started_at": None,
+    "refresh_in_progress": False,
+    "last_successful_refresh_at": None,
+    "consecutive_refresh_failures": 0,
+    "next_refresh_after": None,
+}
+
+
+def _quota_ttl_seconds(settings) -> int:
+    return max(1, int(getattr(settings, "fireworks_quota_ttl_seconds", QUOTA_TTL_SECONDS) or QUOTA_TTL_SECONDS))
+
+
+def _quota_refresh_concurrency(settings) -> int:
+    return max(1, int(getattr(settings, "fireworks_quota_refresh_concurrency", 4) or 4))
+
+
+def _quota_auto_disable_enabled(settings) -> bool:
+    return bool(getattr(settings, "fireworks_auto_disable_exhausted_accounts", True))
+
+
+def _get_quota_refresh_lock() -> asyncio.Lock:
+    global _quota_refresh_lock
+    if _quota_refresh_lock is None:
+        _quota_refresh_lock = asyncio.Lock()
+    return _quota_refresh_lock
+
+
+def _get_account_refresh_lock(account_id: str) -> asyncio.Lock:
+    normalized = _normalize_fireworks_account_id(account_id) or account_id
+    if normalized not in _account_refresh_locks:
+        _account_refresh_locks[normalized] = asyncio.Lock()
+    return _account_refresh_locks[normalized]
+
+
+def _refresh_state_payload() -> dict[str, Any]:
+    return dict(_refresh_state)
+
+
+def _set_global_refresh_started() -> None:
+    now = datetime.now(UTC).isoformat()
+    _refresh_state["refresh_started_at"] = now
+    _refresh_state["refresh_in_progress"] = True
+
+
+def _set_global_refresh_finished(*, success: bool, next_refresh_after: str | None = None) -> None:
+    now = datetime.now(UTC).isoformat()
+    _refresh_state["refresh_in_progress"] = False
+    if success:
+        _refresh_state["last_successful_refresh_at"] = now
+        _refresh_state["consecutive_refresh_failures"] = 0
+    else:
+        _refresh_state["consecutive_refresh_failures"] = int(_refresh_state.get("consecutive_refresh_failures") or 0) + 1
+    _refresh_state["next_refresh_after"] = next_refresh_after
 
 
 def _normalize_fireworks_account_id(account_id: str) -> str:
@@ -55,20 +116,24 @@ def _quota_summary(items: list[Any]) -> dict[str, Any]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        lowered = {str(key).replace("-", "_").casefold(): value for key, value in item.items()}
         quota_name = str(item.get("name") or item.get("id") or item.get("quotaId") or "").casefold()
         value = _quota_number(item.get("value"))
         usage = _quota_number(item.get("usage"))
         max_value = _quota_number(item.get("maxValue") or item.get("max_value"))
+        update_time = item.get("updateTime") or item.get("update_time")
         if quota_name.endswith("monthly-spend-usd"):
             budget = value if value is not None else max_value
             summary["monthly_budget"] = budget
             summary["monthly_used"] = usage
             if budget is not None and usage is not None:
                 summary["monthly_remaining"] = max(0, float(budget) - float(usage))
+            if update_time:
+                summary["monthly_spend_updated_at"] = update_time
         elif quota_name.endswith("serverless-inference-rpm"):
             summary["serverless_rpm_limit"] = value if value is not None else max_value
             summary["serverless_rpm_usage"] = usage
+            if update_time:
+                summary["serverless_rpm_updated_at"] = update_time
     return summary
 
 
@@ -130,6 +195,49 @@ def _snapshot_value(snapshot, name: str, default=None):
     return getattr(snapshot, name, default)
 
 
+def _parse_snapshot_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _snapshot_was_refreshed_since(snapshot, started_at: str) -> bool:
+    started = _parse_snapshot_time(started_at)
+    if not snapshot or started is None:
+        return False
+    for name in ("quota_refreshed_at", "last_successful_refresh_at", "refresh_started_at"):
+        refreshed_at = _parse_snapshot_time(_snapshot_value(snapshot, name))
+        if refreshed_at is not None and refreshed_at >= started:
+            return True
+    return False
+
+
+def _copy_account_quota_snapshot(payload: dict[str, Any], snapshot) -> None:
+    for name in (
+        "quota_supported",
+        "quota_status",
+        "quota_status_code",
+        "quota_summary_json",
+        "quota_items_json",
+        "quota_refreshed_at",
+        "stale_after",
+        "refresh_status",
+        "last_refresh_error_type",
+        "last_refresh_error",
+        "refresh_started_at",
+        "last_successful_refresh_at",
+        "consecutive_refresh_failures",
+        "next_refresh_after",
+    ):
+        payload[name] = _snapshot_value(snapshot, name)
+
+
 def _response_error_text(response) -> str:
     text = getattr(response, "text", None)
     if isinstance(text, str) and text:
@@ -140,7 +248,7 @@ def _response_error_text(response) -> str:
         return ""
 
 
-def _apply_management_error(payload: dict[str, Any], response, *, scope: str) -> None:
+def _apply_management_error(payload: dict[str, Any], response, *, scope: str, ttl_seconds: int = QUOTA_TTL_SECONDS) -> None:
     status_code = getattr(response, "status_code", None)
     body_text = _response_error_text(response)
     decision = classify_fireworks_error(status_code=status_code, body=body_text)
@@ -159,10 +267,13 @@ def _apply_management_error(payload: dict[str, Any], response, *, scope: str) ->
     else:
         payload["quota_status"] = "unavailable"
     payload["quota_refreshed_at"] = datetime.now(UTC).isoformat()
-    payload["stale_after"] = (datetime.now(UTC) + timedelta(seconds=QUOTA_TTL_SECONDS)).isoformat()
+    payload["stale_after"] = (datetime.now(UTC) + timedelta(seconds=ttl_seconds)).isoformat()
+    payload["next_refresh_after"] = payload["stale_after"]
 
 
-def _disable_keys_for_snapshot_error(repository, key, payload: dict[str, Any]) -> None:
+def _disable_keys_for_snapshot_error(repository, key, payload: dict[str, Any], *, auto_disable: bool = True) -> None:
+    if not auto_disable:
+        return
     error_type = str(payload.get("last_refresh_error_type") or "")
     status_code = payload.get("quota_status_code")
     if error_type == "auth_error":
@@ -211,6 +322,10 @@ def _snapshot_response_item(key, snapshot, *, source: str, stale: bool) -> dict[
         "refresh_status": _snapshot_value(snapshot, "refresh_status"),
         "last_refresh_error_type": _snapshot_value(snapshot, "last_refresh_error_type"),
         "last_refresh_error": _snapshot_value(snapshot, "last_refresh_error"),
+        "refresh_started_at": _snapshot_value(snapshot, "refresh_started_at"),
+        "last_successful_refresh_at": _snapshot_value(snapshot, "last_successful_refresh_at"),
+        "consecutive_refresh_failures": _snapshot_value(snapshot, "consecutive_refresh_failures", 0),
+        "next_refresh_after": _snapshot_value(snapshot, "next_refresh_after"),
         "error": _snapshot_value(snapshot, "last_refresh_error") if _snapshot_value(snapshot, "last_refresh_error") else None,
     }
 
@@ -338,6 +453,8 @@ def _fireworks_key_pool_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
 async def _refresh_fireworks_key_snapshot(request: Request, key, *, refresh_quota: bool) -> dict[str, Any]:
     settings = _settings(request)
     repository = _repository(request)
+    ttl_seconds = _quota_ttl_seconds(settings)
+    refresh_started_at = datetime.now(UTC).isoformat()
     payload: dict[str, Any] = {
         "key_fingerprint": getattr(key, "fingerprint", None) or fingerprint_secret(getattr(key, "api_key", "")),
         "account_id": None,
@@ -355,19 +472,25 @@ async def _refresh_fireworks_key_snapshot(request: Request, key, *, refresh_quot
         "refresh_status": "ok",
         "last_refresh_error_type": None,
         "last_refresh_error": None,
+        "refresh_started_at": refresh_started_at,
+        "last_successful_refresh_at": None,
+        "consecutive_refresh_failures": 0,
+        "next_refresh_after": None,
     }
     try:
         async with FireworksManagementClient(settings, key.api_key) as client:
             account_response = await client.get_json("/v1/accounts")
             if account_response.status_code >= 400:
-                _apply_management_error(payload, account_response, scope="account")
-                account_id = _snapshot_value(getattr(repository, "get_fireworks_key_snapshot", lambda _fingerprint: None)(payload["key_fingerprint"]), "account_id")
+                existing = getattr(repository, "get_fireworks_key_snapshot", lambda _fingerprint: None)(payload["key_fingerprint"])
+                _apply_management_error(payload, account_response, scope="account", ttl_seconds=ttl_seconds)
+                account_id = _snapshot_value(existing, "account_id")
                 if account_id:
                     payload["account_id"] = account_id
+                payload["consecutive_refresh_failures"] = int(_snapshot_value(existing, "consecutive_refresh_failures", 0) or 0) + 1
                 upsert_snapshot = getattr(repository, "upsert_fireworks_key_snapshot", None)
                 if callable(upsert_snapshot):
                     upsert_snapshot(payload)
-                _disable_keys_for_snapshot_error(repository, key, payload)
+                _disable_keys_for_snapshot_error(repository, key, payload, auto_disable=_quota_auto_disable_enabled(settings))
                 return payload
             account_payload = account_response.json()
             accounts = account_payload.get("data") or account_payload.get("accounts") or []
@@ -381,23 +504,35 @@ async def _refresh_fireworks_key_snapshot(request: Request, key, *, refresh_quot
                 "account_refreshed_at": datetime.now(UTC).isoformat(),
             })
             if refresh_quota and account_id:
-                quota_response = await client.get_json(f"/v1/accounts/{account_id}/quotas")
-                if quota_response.status_code >= 400:
-                    _apply_management_error(payload, quota_response, scope="quota")
-                    upsert_snapshot = getattr(repository, "upsert_fireworks_key_snapshot", None)
-                    if callable(upsert_snapshot):
-                        upsert_snapshot(payload)
-                    _disable_keys_for_snapshot_error(repository, key, payload)
-                    return payload
-                payload["quota_supported"] = quota_response.status_code == 200
-                payload["quota_status_code"] = quota_response.status_code
-                payload["quota_status"] = "ok" if quota_response.status_code == 200 else "unavailable"
-                quota_payload = quota_response.json()
-                quota_items = _fireworks_quota_items(quota_payload if isinstance(quota_payload, dict) else {})
-                payload["quota_items_json"] = json.dumps(quota_items)
-                payload["quota_summary_json"] = json.dumps(_quota_summary(quota_items), sort_keys=True)
-                payload["quota_refreshed_at"] = datetime.now(UTC).isoformat()
-                payload["stale_after"] = (datetime.now(UTC) + timedelta(seconds=QUOTA_TTL_SECONDS)).isoformat()
+                account_lock = _get_account_refresh_lock(account_id)
+                async with account_lock:
+                    get_account_snapshot = getattr(repository, "get_fireworks_account_quota_snapshot", None)
+                    account_snapshot = get_account_snapshot(account_id) if callable(get_account_snapshot) else None
+                    if _snapshot_was_refreshed_since(account_snapshot, refresh_started_at):
+                        _copy_account_quota_snapshot(payload, account_snapshot)
+                    else:
+                        quota_response = await client.get_json(f"/v1/accounts/{account_id}/quotas")
+                        if quota_response.status_code >= 400:
+                            existing = getattr(repository, "get_fireworks_key_snapshot", lambda _fingerprint: None)(payload["key_fingerprint"])
+                            _apply_management_error(payload, quota_response, scope="quota", ttl_seconds=ttl_seconds)
+                            payload["consecutive_refresh_failures"] = int(_snapshot_value(existing, "consecutive_refresh_failures", 0) or 0) + 1
+                            upsert_snapshot = getattr(repository, "upsert_fireworks_key_snapshot", None)
+                            if callable(upsert_snapshot):
+                                upsert_snapshot(payload)
+                            _disable_keys_for_snapshot_error(repository, key, payload, auto_disable=_quota_auto_disable_enabled(settings))
+                            return payload
+                        payload["quota_supported"] = quota_response.status_code == 200
+                        payload["quota_status_code"] = quota_response.status_code
+                        payload["quota_status"] = "ok" if quota_response.status_code == 200 else "unavailable"
+                        quota_payload = quota_response.json()
+                        quota_items = _fireworks_quota_items(quota_payload if isinstance(quota_payload, dict) else {})
+                        payload["quota_items_json"] = json.dumps(quota_items)
+                        payload["quota_summary_json"] = json.dumps(_quota_summary(quota_items), sort_keys=True)
+                        payload["quota_refreshed_at"] = datetime.now(UTC).isoformat()
+                        payload["last_successful_refresh_at"] = payload["quota_refreshed_at"]
+                        payload["consecutive_refresh_failures"] = 0
+                        payload["stale_after"] = (datetime.now(UTC) + timedelta(seconds=ttl_seconds)).isoformat()
+                        payload["next_refresh_after"] = payload["stale_after"]
     except Exception as exc:
         existing = getattr(repository, "get_fireworks_key_snapshot", lambda _fingerprint: None)(payload["key_fingerprint"])
         already_classified = payload.get("refresh_status") == "error" and payload.get("last_refresh_error_type")
@@ -415,6 +550,7 @@ async def _refresh_fireworks_key_snapshot(request: Request, key, *, refresh_quot
                 "account_refreshed_at": _snapshot_value(existing, "account_refreshed_at"),
                 "quota_refreshed_at": _snapshot_value(existing, "quota_refreshed_at"),
                 "stale_after": _snapshot_value(existing, "stale_after"),
+                "last_successful_refresh_at": _snapshot_value(existing, "last_successful_refresh_at"),
             })
         if already_classified:
             payload["refresh_status"] = "error"
@@ -424,10 +560,12 @@ async def _refresh_fireworks_key_snapshot(request: Request, key, *, refresh_quot
                 payload["quota_status"] = decision.error_type
                 payload["quota_supported"] = False
                 payload["quota_refreshed_at"] = datetime.now(UTC).isoformat()
-                payload["stale_after"] = (datetime.now(UTC) + timedelta(seconds=QUOTA_TTL_SECONDS)).isoformat()
+                payload["stale_after"] = (datetime.now(UTC) + timedelta(seconds=ttl_seconds)).isoformat()
         payload["refresh_status"] = "error"
         payload["last_refresh_error_type"] = payload.get("last_refresh_error_type") or exc.__class__.__name__
         payload["last_refresh_error"] = payload.get("last_refresh_error") or str(exc)
+        payload["consecutive_refresh_failures"] = int(_snapshot_value(existing, "consecutive_refresh_failures", 0) or 0) + 1
+        payload["next_refresh_after"] = payload.get("stale_after") or (datetime.now(UTC) + timedelta(seconds=ttl_seconds)).isoformat()
     upsert_snapshot = getattr(repository, "upsert_fireworks_key_snapshot", None)
     if callable(upsert_snapshot):
         upsert_snapshot(payload)
@@ -484,41 +622,136 @@ async def list_fireworks_quotas(request: Request, account_id: str | None = None)
 
 @router.get("/fireworks/keys/quota-summaries")
 async def list_fireworks_key_quota_summaries(request: Request, refresh: str = "auto"):
-    ctx = _fireworks_context(request)
-    if not ctx.api_key:
-        return {"supported": False, "reason": "not_configured", "items": []}
     repository = _repository(request)
+    settings = _settings(request)
     refresh_mode = (refresh or "auto").casefold()
     if refresh_mode not in {"none", "auto", "force"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="refresh must be none, auto, or force")
     keys = repository.list_keys(include_disabled=True)
     list_snapshots = getattr(repository, "list_fireworks_key_snapshots", lambda: [])
     snapshots = {_snapshot_value(snapshot, "key_fingerprint"): snapshot for snapshot in list_snapshots()}
-    semaphore = asyncio.Semaphore(4)
+
+    def _build_response(*, supported: bool = True, reason: str | None = None, refresh_in_progress: bool = False) -> dict[str, Any]:
+        items = []
+        for key in keys:
+            fingerprint = getattr(key, "fingerprint", None) or fingerprint_secret(getattr(key, "api_key", ""))
+            snapshot = snapshots.get(fingerprint)
+            stale = _snapshot_is_stale(snapshot)
+            items.append(_snapshot_response_item(key, snapshot, source="snapshot" if snapshot else "missing", stale=stale))
+        payload = {
+            "supported": supported,
+            "items": items,
+            "pool_summary": _fireworks_key_pool_summary(items),
+            **_refresh_state_payload(),
+            "refresh_in_progress": refresh_in_progress or bool(_refresh_state.get("refresh_in_progress")),
+        }
+        if reason:
+            payload["reason"] = reason
+        return payload
+
+    if refresh_mode == "none":
+        return _build_response()
+
+    has_refreshable_stored_key = any(
+        getattr(key, "api_key", None) and (refresh_mode == "force" or getattr(key, "enabled", True))
+        for key in keys
+    )
+    if not has_refreshable_stored_key and not _fireworks_context(request).api_key:
+        return _build_response(supported=False, reason="not_configured")
+
+    refresh_lock = _get_quota_refresh_lock()
+    if refresh_mode == "auto" and refresh_lock.locked():
+        return _build_response(refresh_in_progress=True)
+
+    semaphore = asyncio.Semaphore(_quota_refresh_concurrency(settings))
 
     async def _maybe_refresh(key, refresh_quota: bool):
         async with semaphore:
             return await _refresh_fireworks_key_snapshot(request, key, refresh_quota=refresh_quota)
 
-    refresh_tasks = []
-    for key in keys:
-        fingerprint = getattr(key, "fingerprint", None) or fingerprint_secret(getattr(key, "api_key", ""))
-        snapshot = snapshots.get(fingerprint)
-        needs_quota_refresh = _snapshot_needs_quota_refresh(snapshot)
-        should_refresh = refresh_mode == "force" or (refresh_mode == "auto" and getattr(key, "enabled", True) and needs_quota_refresh)
-        if should_refresh:
-            refresh_tasks.append((fingerprint, asyncio.create_task(_maybe_refresh(key, refresh_mode == "force" or needs_quota_refresh))))
-    if refresh_tasks:
-        for fingerprint, task in refresh_tasks:
-            snapshots[fingerprint] = await task
+    async with refresh_lock:
+        _set_global_refresh_started()
+        refresh_tasks = []
+        try:
+            for key in keys:
+                fingerprint = getattr(key, "fingerprint", None) or fingerprint_secret(getattr(key, "api_key", ""))
+                snapshot = snapshots.get(fingerprint)
+                needs_quota_refresh = _snapshot_needs_quota_refresh(snapshot)
+                should_refresh = refresh_mode == "force" or (refresh_mode == "auto" and getattr(key, "enabled", True) and needs_quota_refresh)
+                if should_refresh:
+                    refresh_tasks.append((fingerprint, asyncio.create_task(_maybe_refresh(key, refresh_mode == "force" or needs_quota_refresh))))
+            refresh_success = True
+            for fingerprint, task in refresh_tasks:
+                try:
+                    snapshots[fingerprint] = await task
+                except Exception:
+                    refresh_success = False
+                    raise
+            next_refresh_after = min(
+                (str(_snapshot_value(snapshot, "next_refresh_after") or _snapshot_value(snapshot, "stale_after")) for snapshot in snapshots.values() if _snapshot_value(snapshot, "next_refresh_after") or _snapshot_value(snapshot, "stale_after")),
+                default=None,
+            )
+            _set_global_refresh_finished(success=refresh_success, next_refresh_after=next_refresh_after)
+        except Exception:
+            _set_global_refresh_finished(success=False)
+            raise
 
-    items = []
-    for key in keys:
-        fingerprint = getattr(key, "fingerprint", None) or fingerprint_secret(getattr(key, "api_key", ""))
-        snapshot = snapshots.get(fingerprint)
-        stale = _snapshot_is_stale(snapshot)
-        items.append(_snapshot_response_item(key, snapshot, source="snapshot" if snapshot else "missing", stale=stale))
-    return {"supported": True, "items": items, "pool_summary": _fireworks_key_pool_summary(items)}
+    return _build_response()
+
+
+async def run_quota_refresh_once(app, *, refresh: str = "auto") -> dict[str, Any]:
+    request_like = SimpleNamespace(app=app)
+    return await list_fireworks_key_quota_summaries(request_like, refresh=refresh)
+
+
+async def _quota_background_refresh_loop(app) -> None:
+    settings = app.state.settings
+    interval = max(1, int(getattr(settings, "fireworks_quota_refresh_interval_seconds", 900) or 900))
+    jitter = max(0, int(getattr(settings, "fireworks_quota_refresh_jitter_seconds", 120) or 0))
+
+    async def _sleep_until_next() -> None:
+        delay = interval + (random.randint(0, jitter) if jitter else 0)
+        _refresh_state["next_refresh_after"] = (datetime.now(UTC) + timedelta(seconds=delay)).isoformat()
+        await asyncio.sleep(delay)
+
+    if bool(getattr(settings, "fireworks_quota_refresh_on_startup", True)):
+        try:
+            await run_quota_refresh_once(app, refresh="auto")
+        except Exception:
+            logger.exception("background Fireworks quota refresh on startup failed")
+
+    while True:
+        await _sleep_until_next()
+        try:
+            await run_quota_refresh_once(app, refresh="auto")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("background Fireworks quota refresh failed")
+
+
+def configure_quota_background_refresh(app) -> None:
+    settings = app.state.settings
+    if not bool(getattr(settings, "fireworks_quota_background_refresh_enabled", False)):
+        return
+
+    @app.on_event("startup")
+    async def _start_quota_background_refresh() -> None:
+        task = getattr(app.state, "quota_refresh_task", None)
+        if task and not task.done():
+            return
+        app.state.quota_refresh_task = asyncio.create_task(_quota_background_refresh_loop(app))
+
+    @app.on_event("shutdown")
+    async def _stop_quota_background_refresh() -> None:
+        task = getattr(app.state, "quota_refresh_task", None)
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 @router.get("/fireworks/models")

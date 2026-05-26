@@ -30,6 +30,13 @@ class AdminConfigPatch(BaseModel):
     cooldown_5xx_seconds: int | None = Field(default=None, ge=0)
     cooldown_network_seconds: int | None = Field(default=None, ge=0)
     cooldown_long_seconds: int | None = Field(default=None, ge=0)
+    fireworks_quota_ttl_seconds: int | None = Field(default=None, ge=1)
+    fireworks_quota_refresh_concurrency: int | None = Field(default=None, ge=1)
+    fireworks_auto_disable_exhausted_accounts: bool | None = None
+    fireworks_quota_background_refresh_enabled: bool | None = None
+    fireworks_quota_refresh_interval_seconds: int | None = Field(default=None, ge=1)
+    fireworks_quota_refresh_jitter_seconds: int | None = Field(default=None, ge=0)
+    fireworks_quota_refresh_on_startup: bool | None = None
     transform_debug_enabled: bool | None = None
     transform_debug_retention: int | None = Field(default=None, ge=1)
     transform_debug_level: str | None = Field(default=None, min_length=1)
@@ -56,6 +63,13 @@ def _config_payload(settings) -> dict[str, Any]:
         "cooldown_5xx_seconds": getattr(settings, "cooldown_5xx_seconds", None),
         "cooldown_network_seconds": getattr(settings, "cooldown_network_seconds", None),
         "cooldown_long_seconds": getattr(settings, "cooldown_long_seconds", None),
+        "fireworks_quota_ttl_seconds": getattr(settings, "fireworks_quota_ttl_seconds", None),
+        "fireworks_quota_refresh_concurrency": getattr(settings, "fireworks_quota_refresh_concurrency", None),
+        "fireworks_auto_disable_exhausted_accounts": getattr(settings, "fireworks_auto_disable_exhausted_accounts", None),
+        "fireworks_quota_background_refresh_enabled": getattr(settings, "fireworks_quota_background_refresh_enabled", None),
+        "fireworks_quota_refresh_interval_seconds": getattr(settings, "fireworks_quota_refresh_interval_seconds", None),
+        "fireworks_quota_refresh_jitter_seconds": getattr(settings, "fireworks_quota_refresh_jitter_seconds", None),
+        "fireworks_quota_refresh_on_startup": getattr(settings, "fireworks_quota_refresh_on_startup", None),
         "transform_debug_enabled": getattr(settings, "transform_debug_enabled", None),
         "transform_debug_retention": getattr(settings, "transform_debug_retention", None),
         "transform_debug_level": getattr(settings, "transform_debug_level", None),

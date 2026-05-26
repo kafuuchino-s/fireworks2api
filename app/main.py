@@ -14,6 +14,7 @@ from app.platform.logging import configure_logging
 from app.products.anthropic import messages_router
 from app.products import health
 from app.products.admin import router as admin
+from app.products.admin.fireworks import configure_quota_background_refresh
 from app.products.openai.router import chat_completions_router, completions_router, embeddings_router, models_router, rerank_router, responses_router
 from app.products.openai.errors import OpenAIRequestError, openai_error_response_json
 from app.products.web.router import router as web_router, static_mount
@@ -55,6 +56,7 @@ def create_app() -> FastAPI:
 
     app.state.settings = settings
     app.state.repository = repository
+    configure_quota_background_refresh(app)
 
     if settings.cors_allow_origins:
         app.add_middleware(

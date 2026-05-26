@@ -95,7 +95,7 @@ async def test_fresh_exhausted_snapshot_removes_sibling_keys():
 
 
 @pytest.mark.asyncio
-async def test_stale_exhausted_snapshot_does_not_remove_candidates():
+async def test_stale_exhausted_snapshot_removes_candidates():
     now = datetime.now(UTC)
     repo = _Repo(
         [_key("k1", "fp-1"), _key("k2", "fp-2")],
@@ -103,7 +103,7 @@ async def test_stale_exhausted_snapshot_does_not_remove_candidates():
     )
     request = _context(repo, body={"model": "alias", "messages": []})
     ctx = await build_proxy_context_from_body(request, {"model": "alias", "messages": []})
-    assert {k.fingerprint for k in ctx.selected_keys} == {"fp-1", "fp-2"}
+    assert {k.fingerprint for k in ctx.selected_keys} == {"fp-2"}
 
 
 @pytest.mark.asyncio

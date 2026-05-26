@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     cooldown_network_seconds: int = 30
     cooldown_long_seconds: int = 3600
 
+    fireworks_quota_ttl_seconds: int = 1800
+    fireworks_quota_refresh_concurrency: int = 4
+    fireworks_auto_disable_exhausted_accounts: bool = True
+    fireworks_quota_background_refresh_enabled: bool = True
+    fireworks_quota_refresh_interval_seconds: int = 900
+    fireworks_quota_refresh_jitter_seconds: int = 120
+    fireworks_quota_refresh_on_startup: bool = True
+
     debug_log_bodies: bool = False
 
     @field_validator("fireworks_api_keys", "proxy_api_keys", "cors_allow_origins", mode="before")

@@ -162,10 +162,14 @@ def test_admin_cleanup_invalid_keys(monkeypatch: MonkeyPatch) -> None:
         async def __aenter__(self): return self
         async def __aexit__(self, exc_type, exc, tb): return None
         async def get_json(self, path, params=None):
-            if self.api_key == "fw_401_valid_shape": return FakeResponse(401)
-            if self.api_key == "fw_403_valid_shape": return FakeResponse(403)
-            if self.api_key == "fw_500_valid_shape": return FakeResponse(500)
-            if self.api_key == "fw_200_valid_shape": return FakeResponse(200)
+            if self.api_key == "fw_401_valid_shape":
+                return FakeResponse(401)
+            if self.api_key == "fw_403_valid_shape":
+                return FakeResponse(403)
+            if self.api_key == "fw_500_valid_shape":
+                return FakeResponse(500)
+            if self.api_key == "fw_200_valid_shape":
+                return FakeResponse(200)
             raise TimeoutError("timeout")
 
     monkeypatch.setattr(admin_keys, "FireworksManagementClient", FakeClient)
@@ -346,7 +350,7 @@ def test_admin_fireworks_models_and_import(monkeypatch: MonkeyPatch) -> None:
     assert body["created"] == 1
     assert body["items"][0]["model"]["alias"] == "test-model"
     assert "upstream_endpoint" not in body["items"][0]["model"]
-    client.delete(f"/admin/models/test-model", headers=headers)
+    client.delete("/admin/models/test-model", headers=headers)
 
     response = client.post(
         "/admin/models/import",
@@ -567,7 +571,10 @@ def test_admin_fireworks_key_quota_summaries(monkeypatch: MonkeyPatch) -> None:
             if path == "/v1/accounts":
                 return FakeResponse(200, {"data": [{"id": "accounts/e990e03e", "label": "Primary", "state": "active", "suspend_state": "none"}]})
             if path == "/v1/accounts/e990e03e/quotas":
-                return FakeResponse(200, {"data": [{"name": "accounts/e990e03e/quotas/monthly-spend-usd", "value": "50", "usage": 5}, {"name": "accounts/e990e03e/quotas/serverless-inference-rpm", "value": "6000", "usage": 0}]})
+                return FakeResponse(200, {"data": [
+                    {"name": "accounts/e990e03e/quotas/monthly-spend-usd", "value": "50", "usage": 5, "updateTime": "2026-05-26T19:51:17Z"},
+                    {"name": "accounts/e990e03e/quotas/serverless-inference-rpm", "value": "6000", "usage": 0, "updateTime": "2026-05-26T19:51:18Z"},
+                ]})
             raise AssertionError(path)
 
     monkeypatch.setattr(fireworks, "_repository", lambda request: FakeRepo())
@@ -587,8 +594,12 @@ def test_admin_fireworks_key_quota_summaries(monkeypatch: MonkeyPatch) -> None:
     assert item["quota_summary"]["monthly_budget"] == 50
     assert item["quota_summary"]["monthly_used"] == 5
     assert item["quota_summary"]["monthly_remaining"] == 45.0
+    assert item["quota_summary"]["monthly_spend_updated_at"] == "2026-05-26T19:51:17Z"
     assert item["quota_summary"]["serverless_rpm_limit"] == 6000
     assert item["quota_summary"]["serverless_rpm_usage"] == 0
+    assert item["quota_summary"]["serverless_rpm_updated_at"] == "2026-05-26T19:51:18Z"
+    assert "reset_at" not in item["quota_summary"]
+    assert "expires_at" not in item["quota_summary"]
     assert item["quota_items"][0]["name"] == "accounts/e990e03e/quotas/monthly-spend-usd"
     assert "fw-secret-full-key" not in response.text
 
@@ -643,6 +654,7 @@ def test_admin_fireworks_key_quota_summaries_refresh_none_uses_snapshots(monkeyp
             raise AssertionError("no live calls expected")
 
     monkeypatch.setattr(fireworks, "_repository", lambda request: FakeRepo())
+    monkeypatch.setattr(fireworks, "_fireworks_context", lambda request: (_ for _ in ()).throw(AssertionError("no management key lookup expected")))
     monkeypatch.setattr(fireworks, "FireworksManagementClient", FakeClient)
 
     response = client.get("/admin/fireworks/keys/quota-summaries", headers=headers, params={"refresh": "none"})
@@ -781,8 +793,10 @@ def test_admin_fireworks_key_quota_summaries_stale_auto_refresh(monkeypatch: Mon
         async def __aexit__(self, exc_type, exc, tb): return None
         async def get_json(self, path, params=None):
             captured.append(path)
-            if path == "/v1/accounts": return FakeResponse(200, {"data": [{"id": "accounts/e990e03e", "label": "Primary"}]})
-            if path == "/v1/accounts/e990e03e/quotas": return FakeResponse(200, {"data": [{"name": "accounts/e990e03e/quotas/monthly-spend-usd", "value": "50", "usage": 5}]})
+            if path == "/v1/accounts":
+                return FakeResponse(200, {"data": [{"id": "accounts/e990e03e", "label": "Primary"}]})
+            if path == "/v1/accounts/e990e03e/quotas":
+                return FakeResponse(200, {"data": [{"name": "accounts/e990e03e/quotas/monthly-spend-usd", "value": "50", "usage": 5}]})
             raise AssertionError(path)
 
     monkeypatch.setattr(fireworks, "_repository", lambda request: repo)
@@ -879,6 +893,76 @@ def test_admin_fireworks_key_quota_summaries_partial_snapshot_auto_refreshes(mon
     assert item["quota_summary"]["monthly_budget"] == 50
 
 
+def test_admin_fireworks_key_quota_summaries_force_refreshes_disabled_key(monkeypatch: MonkeyPatch) -> None:
+    _require_auth(monkeypatch)
+    headers = {"Authorization": "Bearer token"}
+
+    class FakeKey:
+        name = "disabled-key"
+        api_key = "fw-secret-disabled-key"
+        fingerprint = "fp-disabled"
+        enabled = False
+
+    class FakeRepo:
+        def __init__(self):
+            self.saved = []
+
+        def list_keys(self, include_disabled: bool = True):
+            return [FakeKey()]
+
+        def list_fireworks_key_snapshots(self):
+            return []
+
+        def upsert_fireworks_key_snapshot(self, snapshot):
+            self.saved.append(snapshot)
+
+    class FakeResponse:
+        status_code = 200
+        text = "{}"
+        headers = {}
+
+        def __init__(self, payload: dict):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    captured: list[str] = []
+    repo = FakeRepo()
+
+    class FakeClient:
+        def __init__(self, settings, api_key):
+            self.api_key = api_key
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get_json(self, path, params=None):
+            captured.append(path)
+            if path == "/v1/accounts":
+                return FakeResponse({"data": [{"id": "accounts/e990e03e", "label": "Primary"}]})
+            if path == "/v1/accounts/e990e03e/quotas":
+                return FakeResponse({"data": [{"name": "accounts/e990e03e/quotas/monthly-spend-usd", "value": "50", "usage": 5}]})
+            raise AssertionError(path)
+
+    monkeypatch.setattr(fireworks, "_repository", lambda request: repo)
+    monkeypatch.setattr(fireworks, "_fireworks_context", lambda request: (_ for _ in ()).throw(AssertionError("force should use the disabled stored key directly")))
+    monkeypatch.setattr(fireworks, "FireworksManagementClient", FakeClient)
+
+    response = client.get("/admin/fireworks/keys/quota-summaries", headers=headers, params={"refresh": "force"})
+
+    assert response.status_code == 200
+    assert captured == ["/v1/accounts", "/v1/accounts/e990e03e/quotas"]
+    assert repo.saved
+    item = response.json()["items"][0]
+    assert item["enabled"] is False
+    assert item["quota_status"] == "ok"
+    assert item["quota_summary"]["monthly_budget"] == 50
+
+
 def test_admin_fireworks_quota_412_marks_snapshot_quota_exhausted(monkeypatch: MonkeyPatch) -> None:
     _require_auth(monkeypatch)
     headers = {"Authorization": "Bearer token"}
@@ -961,6 +1045,152 @@ def test_admin_fireworks_quota_412_marks_snapshot_quota_exhausted(monkeypatch: M
     assert item["quota_status"] == "quota_exhausted"
     assert item["account_state"] == "suspended"
     assert item["suspend_state"] == "suspended"
+
+
+def test_admin_fireworks_quota_412_respects_auto_disable_config(monkeypatch: MonkeyPatch) -> None:
+    _require_auth(monkeypatch)
+    headers = {"Authorization": "Bearer token"}
+    monkeypatch.setattr(app.state.settings, "fireworks_auto_disable_exhausted_accounts", False, raising=False)
+
+    class FakeKey:
+        name = "key-1"
+        api_key = "fw-secret-full-key"
+        fingerprint = "fp-1"
+        enabled = True
+
+    class FakeSnapshot:
+        key_fingerprint = "fp-1"
+        account_id = "e990e03e"
+        account_label = "Primary"
+        account_state = "active"
+        suspend_state = "none"
+        quota_supported = True
+        quota_status = "ok"
+        quota_status_code = 200
+        quota_summary_json = '{"count": 1, "monthly_budget": 50}'
+        quota_items_json = '[{"name":"old"}]'
+        account_refreshed_at = "2026-05-06T00:00:00+00:00"
+        quota_refreshed_at = "2026-05-06T00:00:00+00:00"
+        stale_after = "2020-01-01T00:00:00+00:00"
+        refresh_status = "ok"
+        last_refresh_error_type = None
+        last_refresh_error = None
+
+    class FakeRepo:
+        def __init__(self):
+            self.saved = []
+            self.enabled_calls = []
+
+        def list_keys(self, include_disabled: bool = True):
+            return [FakeKey()]
+
+        def list_fireworks_key_snapshots(self):
+            return [FakeSnapshot()]
+
+        def get_fireworks_key_snapshot(self, fingerprint: str):
+            return FakeSnapshot() if fingerprint == "fp-1" else None
+
+        def upsert_fireworks_key_snapshot(self, snapshot):
+            self.saved.append(snapshot)
+
+        def set_key_enabled(self, *args):
+            self.enabled_calls.append(args)
+
+    class FakeResponse:
+        def __init__(self, status_code: int, payload: dict):
+            self.status_code = status_code
+            self._payload = payload
+            self.text = json.dumps(payload)
+            self.headers = {}
+
+        def json(self):
+            return self._payload
+
+    repo = FakeRepo()
+
+    class FakeClient:
+        def __init__(self, settings, api_key):
+            self.api_key = api_key
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get_json(self, path, params=None):
+            if path == "/v1/accounts":
+                return FakeResponse(200, {"data": [{"id": "accounts/e990e03e", "label": "Primary"}]})
+            if path == "/v1/accounts/e990e03e/quotas":
+                return FakeResponse(412, {"error": {"message": "Account e990e03e is suspended, possibly due to reaching the monthly spending limit.", "type": "api_error"}})
+            raise AssertionError(path)
+
+    monkeypatch.setattr(fireworks, "_repository", lambda request: repo)
+    monkeypatch.setattr(fireworks, "FireworksManagementClient", FakeClient)
+
+    response = client.get("/admin/fireworks/keys/quota-summaries", headers=headers, params={"refresh": "force"})
+
+    assert response.status_code == 200
+    assert repo.saved
+    assert repo.saved[0]["quota_status"] == "quota_exhausted"
+    assert repo.enabled_calls == []
+
+
+def test_fireworks_account_quota_snapshot_merges_into_key_snapshot(tmp_path) -> None:
+    db_path = tmp_path / "quota-snapshots.sqlite3"
+    init_db(db_path)
+    repository = AppRepository(db_path)
+    repository.upsert_key("key-1", "fw_merge_snapshot_key_123456", enabled=True)
+    key = repository.get_key("key-1")
+    assert key is not None
+
+    repository.upsert_fireworks_key_snapshot(
+        {
+            "key_fingerprint": key.fingerprint,
+            "account_id": "accounts/acct-1",
+            "account_label": "Primary",
+            "account_state": "active",
+            "suspend_state": "none",
+            "quota_supported": True,
+            "quota_status": "ok",
+            "quota_status_code": 200,
+            "quota_summary_json": '{"count": 1, "monthly_budget": 10}',
+            "quota_items_json": '[{"name": "old"}]',
+            "account_refreshed_at": "2026-05-26T00:00:00+00:00",
+            "quota_refreshed_at": "2026-05-26T00:00:00+00:00",
+            "stale_after": "2026-05-26T00:30:00+00:00",
+            "refresh_status": "ok",
+        }
+    )
+    account_snapshot = repository.get_fireworks_account_quota_snapshot("accounts/acct-1")
+    assert account_snapshot is not None
+    assert account_snapshot.account_id == "acct-1"
+    assert account_snapshot.quota_status == "ok"
+
+    repository.upsert_fireworks_account_quota_snapshot(
+        "acct-1",
+        {
+            "quota_supported": False,
+            "quota_status": "quota_exhausted",
+            "quota_status_code": 412,
+            "quota_summary_json": '{"count": 1, "monthly_budget": 10, "monthly_used": 10, "monthly_remaining": 0}',
+            "quota_items_json": '[{"name": "new"}]',
+            "quota_refreshed_at": "2026-05-26T01:00:00+00:00",
+            "stale_after": "2026-05-26T01:30:00+00:00",
+            "refresh_status": "error",
+            "last_refresh_error_type": "quota_exhausted",
+            "last_refresh_error": "quota exhausted",
+            "consecutive_refresh_failures": 3,
+            "next_refresh_after": "2026-05-26T01:30:00+00:00",
+        },
+    )
+    merged = repository.get_fireworks_key_snapshot(key.fingerprint)
+    assert merged is not None
+    assert merged.account_id == "accounts/acct-1"
+    assert merged.quota_status == "quota_exhausted"
+    assert merged.quota_status_code == 412
+    assert merged.quota_summary_json and "monthly_remaining" in merged.quota_summary_json
+    assert merged.consecutive_refresh_failures == 3
 
 
 def test_admin_key_delete_removes_snapshot(monkeypatch: MonkeyPatch) -> None:
@@ -1113,6 +1343,8 @@ def test_admin_config_get_patch_and_token_rotation(monkeypatch: MonkeyPatch, tmp
     settings = Settings(
         database_path=db_path,
         admin_token="token-old",
+        fireworks_api_keys=[],
+        fireworks_api_keys_json=[],
         proxy_api_keys=["proxy-old"],
         request_timeout_seconds=120.0,
         allow_unknown_model_passthrough=False,
@@ -1135,6 +1367,13 @@ def test_admin_config_get_patch_and_token_rotation(monkeypatch: MonkeyPatch, tmp
     assert body["transform_debug_enabled"] is False
     assert body["transform_debug_retention"] == 50
     assert body["transform_debug_level"] == "summary"
+    assert body["fireworks_quota_ttl_seconds"] == 1800
+    assert body["fireworks_quota_refresh_concurrency"] == 4
+    assert body["fireworks_auto_disable_exhausted_accounts"] is True
+    assert body["fireworks_quota_background_refresh_enabled"] is True
+    assert body["fireworks_quota_refresh_interval_seconds"] == 900
+    assert body["fireworks_quota_refresh_jitter_seconds"] == 120
+    assert body["fireworks_quota_refresh_on_startup"] is True
     assert "cors_allow_origins" not in body
     assert "enable_admin_static" not in body
     assert "sync_env_keys_on_startup" not in body
@@ -1159,6 +1398,13 @@ def test_admin_config_get_patch_and_token_rotation(monkeypatch: MonkeyPatch, tmp
             "transform_debug_enabled": True,
             "transform_debug_retention": 12,
             "transform_debug_level": "summary",
+            "fireworks_quota_ttl_seconds": 60,
+            "fireworks_quota_refresh_concurrency": 2,
+            "fireworks_auto_disable_exhausted_accounts": False,
+            "fireworks_quota_background_refresh_enabled": False,
+            "fireworks_quota_refresh_interval_seconds": 30,
+            "fireworks_quota_refresh_jitter_seconds": 5,
+            "fireworks_quota_refresh_on_startup": False,
         },
     )
     assert response.status_code == 200
@@ -1167,6 +1413,13 @@ def test_admin_config_get_patch_and_token_rotation(monkeypatch: MonkeyPatch, tmp
     assert settings.transform_debug_enabled is True
     assert settings.transform_debug_retention == 12
     assert settings.transform_debug_level == "summary"
+    assert settings.fireworks_quota_ttl_seconds == 60
+    assert settings.fireworks_quota_refresh_concurrency == 2
+    assert settings.fireworks_auto_disable_exhausted_accounts is False
+    assert settings.fireworks_quota_background_refresh_enabled is False
+    assert settings.fireworks_quota_refresh_interval_seconds == 30
+    assert settings.fireworks_quota_refresh_jitter_seconds == 5
+    assert settings.fireworks_quota_refresh_on_startup is False
 
     response = client.patch(
         "/admin/config/runtime",

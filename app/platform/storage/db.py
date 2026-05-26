@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 SCHEMA = """
@@ -95,6 +95,25 @@ CREATE TABLE IF NOT EXISTS fireworks_key_snapshots (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS fireworks_account_quota_snapshots (
+  account_id TEXT PRIMARY KEY,
+  quota_supported INTEGER,
+  quota_status TEXT,
+  quota_status_code INTEGER,
+  quota_summary_json TEXT,
+  quota_items_json TEXT,
+  quota_refreshed_at TEXT,
+  stale_after TEXT,
+  refresh_status TEXT,
+  last_refresh_error_type TEXT,
+  last_refresh_error TEXT,
+  refresh_started_at TEXT,
+  last_successful_refresh_at TEXT,
+  consecutive_refresh_failures INTEGER NOT NULL DEFAULT 0,
+  next_refresh_after TEXT,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS fireworks_account_cooldowns (
   account_id TEXT PRIMARY KEY,
   cooldown_until TEXT,
@@ -136,6 +155,8 @@ CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp ON request_logs(timestamp)
 CREATE INDEX IF NOT EXISTS idx_request_logs_model ON request_logs(model_alias);
 CREATE INDEX IF NOT EXISTS idx_request_logs_key ON request_logs(key_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_fireworks_key_snapshots_stale_after ON fireworks_key_snapshots(stale_after);
+CREATE INDEX IF NOT EXISTS idx_fireworks_account_quota_snapshots_stale_after ON fireworks_account_quota_snapshots(stale_after);
+CREATE INDEX IF NOT EXISTS idx_fireworks_account_quota_snapshots_next_refresh_after ON fireworks_account_quota_snapshots(next_refresh_after);
 CREATE INDEX IF NOT EXISTS idx_fireworks_account_cooldowns_cooldown_until ON fireworks_account_cooldowns(cooldown_until);
 
 CREATE TABLE IF NOT EXISTS response_key_routes (
@@ -332,11 +353,68 @@ def _seed_request_log_totals(conn: sqlite3.Connection) -> None:
     )
 
 
+def _normalize_account_id(value: str | None) -> str | None:
+    normalized = str(value or "").strip()
+    if normalized.startswith("accounts/"):
+        normalized = normalized[len("accounts/") :]
+    normalized = normalized.strip()
+    return normalized or None
+
+
+def _migrate_account_quota_snapshots(conn: sqlite3.Connection) -> None:
+    key_columns = _columns(conn, "fireworks_key_snapshots")
+    account_columns = _columns(conn, "fireworks_account_quota_snapshots")
+    if not key_columns or not account_columns:
+        return
+
+    rows = conn.execute(
+        """
+        SELECT account_id, quota_supported, quota_status, quota_status_code,
+               quota_summary_json, quota_items_json, quota_refreshed_at, stale_after,
+               refresh_status, last_refresh_error_type, last_refresh_error, updated_at
+        FROM fireworks_key_snapshots
+        WHERE account_id IS NOT NULL AND TRIM(account_id) != ''
+        ORDER BY COALESCE(quota_refreshed_at, updated_at) DESC
+        """
+    ).fetchall()
+    for row in rows:
+        account_id = _normalize_account_id(row["account_id"])
+        if not account_id:
+            continue
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO fireworks_account_quota_snapshots(
+              account_id, quota_supported, quota_status, quota_status_code,
+              quota_summary_json, quota_items_json, quota_refreshed_at, stale_after,
+              refresh_status, last_refresh_error_type, last_refresh_error,
+              last_successful_refresh_at, consecutive_refresh_failures, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                account_id,
+                row["quota_supported"],
+                row["quota_status"],
+                row["quota_status_code"],
+                row["quota_summary_json"],
+                row["quota_items_json"],
+                row["quota_refreshed_at"],
+                row["stale_after"],
+                row["refresh_status"],
+                row["last_refresh_error_type"],
+                row["last_refresh_error"],
+                row["quota_refreshed_at"] if row["refresh_status"] == "ok" else None,
+                0 if row["refresh_status"] == "ok" else 1,
+                row["updated_at"],
+            ),
+        )
+
+
 def init_db(db_path: Path) -> None:
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
         _migrate_model_mappings(conn)
         _migrate_transform_debug_logs(conn)
+        _migrate_account_quota_snapshots(conn)
         _seed_request_log_totals(conn)
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, datetime('now'))",
