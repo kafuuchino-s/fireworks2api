@@ -268,10 +268,14 @@ def _validate_responses_input_message(
     content = message.get("content")
     if isinstance(content, str):
         if not content:
+            if allow_empty_text_parts:
+                return  # Bridge mode: let normaliser handle, upstream decides
             raise_openai_error("message content must not be empty", param=f"input[{index}].content", code="invalid_request_error")
         return
     if isinstance(content, list):
         if not content:
+            if allow_empty_text_parts:
+                return  # Bridge mode: let normaliser handle, upstream decides
             raise_openai_error("message content must not be empty", param=f"input[{index}].content", code="invalid_request_error")
         parts_to_validate = [
             part
@@ -279,6 +283,8 @@ def _validate_responses_input_message(
             if not (allow_empty_text_parts and _is_empty_text_part(part))
         ]
         if not parts_to_validate:
+            if allow_empty_text_parts:
+                return  # Bridge mode: all parts are empty text, upstream decides
             raise_openai_error("message content must not be empty", param=f"input[{index}].content", code="invalid_request_error")
         for part_index, part in enumerate(content):
             if allow_empty_text_parts and _is_empty_text_part(part):

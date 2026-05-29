@@ -145,17 +145,17 @@ def test_validate_responses_body_rejects_plain_empty_text_part() -> None:
     assert exc.value.param == "input[0].content[0].text"
 
 
-def test_validate_responses_body_rejects_all_empty_sub2api_text_parts() -> None:
-    with pytest.raises(OpenAIRequestError) as exc:
-        native_responses.validate_responses_body(
-            {
-                "model": "test",
-                "input": [{"role": "user", "content": [{"type": "input_text", "text": ""}]}],
-                "include": ["reasoning.encrypted_content"],
-            }
-        )
-
-    assert exc.value.param == "input[0].content"
+def test_validate_responses_body_allows_all_empty_sub2api_text_parts() -> None:
+    # In sub2api bridge mode, messages whose content consists entirely of empty
+    # text parts should pass validation — the normaliser drops them and
+    # transparently forwards the result; upstream decides whether to reject.
+    native_responses.validate_responses_body(
+        {
+            "model": "test",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": ""}]}],
+            "include": ["reasoning.encrypted_content"],
+        }
+    )
 
 
 def test_validate_responses_body_rejects_invalid_mcp_require_approval_type() -> None:
@@ -404,6 +404,42 @@ def test_build_responses_adapter_drops_sub2api_empty_text_placeholders() -> None
             {"type": "image", "image_url": {"url": "data:image/png;base64,AAAA"}},
             {"type": "text", "text": "describe"},
         ],
+    }
+    assert any(
+        change["field"] == "input.content" and change["type"] == "empty_text"
+        for change in report["field_changes"]
+    )
+
+
+def test_build_responses_adapter_drops_all_empty_text_parts_and_passes_through() -> None:
+    """When all content parts are empty text, normaliser drops them but passes
+    the (now empty) content through transparently — it's the upstream's job
+    to accept or reject, not the proxy's."""
+    context = SimpleNamespace(
+        body={
+            "model": "test",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": ""},
+                    ],
+                }
+            ],
+            "include": ["reasoning.encrypted_content"],
+        },
+        settings=SimpleNamespace(affinity_hash_secret="affinity-secret", log_hash_secret="log-secret"),
+        request_headers={},
+        stable_key="stable",
+        resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/test"),
+    )
+
+    payload, _, report = native_responses.build_responses_adapter(context)
+
+    assert payload["input"][0] == {
+        "role": "user",
+        "content": [],
     }
     assert any(
         change["field"] == "input.content" and change["type"] == "empty_text"
