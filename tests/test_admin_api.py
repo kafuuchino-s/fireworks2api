@@ -734,6 +734,108 @@ def test_admin_fireworks_key_quota_pool_summary_deduplicates_accounts(monkeypatc
     assert "fw-secret-two" not in response.text
 
 
+def test_admin_fireworks_key_quota_pool_summary_includes_quota_disabled_accounts(monkeypatch: MonkeyPatch) -> None:
+    _require_auth(monkeypatch)
+    headers = {"Authorization": "Bearer token"}
+
+    class FakeKey:
+        def __init__(
+            self,
+            name: str,
+            fingerprint: str,
+            *,
+            enabled: bool,
+            disabled_reason: str | None = None,
+            last_error_type: str | None = None,
+        ) -> None:
+            self.name = name
+            self.api_key = f"fw-secret-{name}"
+            self.fingerprint = fingerprint
+            self.enabled = enabled
+            self.disabled_reason = disabled_reason
+            self.last_error_type = last_error_type
+            self.last_error_at = None
+
+    class FakeSnapshot:
+        def __init__(self, fingerprint: str, account_id: str, status: str, budget: int | None, used: int | None) -> None:
+            self.key_fingerprint = fingerprint
+            self.account_id = account_id
+            self.account_label = "Primary"
+            self.account_state = "active" if status == "ok" else "suspended"
+            self.suspend_state = "none" if status == "ok" else "suspended"
+            self.quota_supported = status == "ok"
+            self.quota_status = status
+            self.quota_status_code = 200 if status == "ok" else 412
+            summary = {"count": 1}
+            if budget is not None:
+                summary["monthly_budget"] = budget
+            if used is not None:
+                summary["monthly_used"] = used
+                if budget is not None:
+                    summary["monthly_remaining"] = max(0, budget - used)
+            self.quota_summary_json = json.dumps(summary)
+            self.quota_items_json = "[]"
+            self.account_refreshed_at = "2026-05-06T00:00:00+00:00"
+            self.quota_refreshed_at = "2026-05-06T00:00:00+00:00"
+            self.stale_after = "2099-01-01T00:00:00+00:00"
+            self.refresh_status = "ok" if status == "ok" else "error"
+            self.last_refresh_error_type = None if status == "ok" else "quota_exhausted"
+            self.last_refresh_error = None
+
+    class FakeRepo:
+        def list_keys(self, include_disabled: bool = True):
+            return [
+                FakeKey("enabled", "fp-enabled", enabled=True),
+                FakeKey(
+                    "quota-disabled",
+                    "fp-quota-disabled",
+                    enabled=False,
+                    disabled_reason="upstream_account_unavailable",
+                    last_error_type="quota_exhausted",
+                ),
+                FakeKey(
+                    "quota-disabled-empty",
+                    "fp-quota-disabled-empty",
+                    enabled=False,
+                    disabled_reason="upstream_account_unavailable",
+                    last_error_type="quota_exhausted",
+                ),
+                FakeKey("admin-disabled", "fp-admin-disabled", enabled=False, disabled_reason="admin_disabled"),
+                FakeKey("auth-disabled", "fp-auth-disabled", enabled=False, disabled_reason="upstream_auth_failed", last_error_type="auth_error"),
+            ]
+
+        def list_fireworks_key_snapshots(self):
+            return [
+                FakeSnapshot("fp-enabled", "acct-enabled", "ok", 100, 20),
+                FakeSnapshot("fp-quota-disabled", "acct-exhausted", "quota_exhausted", 50, 40),
+                FakeSnapshot("fp-quota-disabled-empty", "acct-empty", "quota_exhausted", None, None),
+                FakeSnapshot("fp-admin-disabled", "acct-admin", "ok", 999, 1),
+                FakeSnapshot("fp-auth-disabled", "acct-auth", "auth_error", 999, 1),
+            ]
+
+    monkeypatch.setattr(fireworks, "_repository", lambda request: FakeRepo())
+
+    response = client.get("/admin/fireworks/keys/quota-summaries", headers=headers, params={"refresh": "none"})
+
+    assert response.status_code == 200
+    body = response.json()
+    summary = body["pool_summary"]
+    assert summary["key_count"] == 5
+    assert summary["enabled_key_count"] == 1
+    assert summary["accounting_key_count"] == 2
+    assert summary["quota_disabled_key_count"] == 1
+    assert summary["quota_source_count"] == 2
+    assert summary["monthly_budget"] == 150
+    assert summary["monthly_used"] == 70
+    assert summary["monthly_remaining"] == 80
+    assert summary["usage_ratio"] == 70 / 150
+    assert summary["quota_status"] == "degraded"
+    exhausted = next(item for item in body["items"] if item["key_name"] == "quota-disabled")
+    assert exhausted["quota_summary"]["monthly_budget"] == 50
+    assert exhausted["quota_summary"]["monthly_used"] == 50
+    assert exhausted["quota_summary"]["monthly_remaining"] == 0
+
+
 def test_admin_fireworks_key_quota_summaries_stale_auto_refresh(monkeypatch: MonkeyPatch) -> None:
     _require_auth(monkeypatch)
     headers = {"Authorization": "Bearer token"}
@@ -1040,11 +1142,23 @@ def test_admin_fireworks_quota_412_marks_snapshot_quota_exhausted(monkeypatch: M
     assert saved["quota_status"] == "quota_exhausted"
     assert saved["refresh_status"] == "error"
     assert saved["last_refresh_error_type"] == "quota_exhausted"
+    saved_summary = json.loads(saved["quota_summary_json"])
+    assert saved_summary["monthly_budget"] == 50
+    assert saved_summary["monthly_used"] == 50
+    assert saved_summary["monthly_remaining"] == 0
+    assert saved["quota_items_json"] == '[{"name":"old"}]'
     assert repo.enabled_calls == [("key-1", False, "upstream_account_unavailable", "quota_exhausted")]
-    item = response.json()["items"][0]
+    body = response.json()
+    item = body["items"][0]
     assert item["quota_status"] == "quota_exhausted"
     assert item["account_state"] == "suspended"
     assert item["suspend_state"] == "suspended"
+    assert item["quota_summary"]["monthly_budget"] == 50
+    assert item["quota_summary"]["monthly_used"] == 50
+    assert item["quota_summary"]["monthly_remaining"] == 0
+    assert body["pool_summary"]["monthly_budget"] == 50
+    assert body["pool_summary"]["monthly_used"] == 50
+    assert body["pool_summary"]["monthly_remaining"] == 0
 
 
 def test_admin_fireworks_quota_412_respects_auto_disable_config(monkeypatch: MonkeyPatch) -> None:

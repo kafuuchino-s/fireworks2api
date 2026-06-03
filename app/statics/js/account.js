@@ -186,6 +186,8 @@ function normalizePoolSummary(raw) {
     account_count: finiteNumber(raw.account_count),
     unknown_account_source_count: finiteNumber(raw.unknown_account_source_count),
     deduplicated_key_count: finiteNumber(raw.deduplicated_key_count),
+    accounting_key_count: finiteNumber(raw.accounting_key_count),
+    quota_disabled_key_count: finiteNumber(raw.quota_disabled_key_count) || 0,
     monthly_budget: finiteNumber(raw.monthly_budget),
     monthly_used: finiteNumber(raw.monthly_used),
     monthly_remaining: finiteNumber(raw.monthly_remaining),
@@ -209,14 +211,38 @@ function poolEntryScore(q) {
   return score;
 }
 
+function quotaAutoDisabledKey(key, q) {
+  return key?.enabled === false
+    && key?.disabled_reason === 'upstream_account_unavailable'
+    && key?.last_error_type === 'quota_exhausted'
+    && finiteNumber(q?.monthly_budget) != null;
+}
+
+function poolQuotaAmounts(q) {
+  const budget = finiteNumber(q?.monthly_budget);
+  let used = finiteNumber(q?.monthly_used);
+  let remaining = finiteNumber(q?.monthly_remaining);
+  if (['quota_exhausted', 'exhausted'].includes(quotaStatus(q)) && budget != null) {
+    if (used == null || used < budget) used = budget;
+    remaining = 0;
+  } else if (remaining == null && budget != null && used != null) {
+    remaining = Math.max(0, budget - used);
+  }
+  return { budget, used, remaining };
+}
+
 function buildPoolQuotaSummary() {
   const groups = new Map();
   const groupCounts = new Map();
   let enabledKeyCount = 0;
+  let quotaDisabledKeyCount = 0;
   for (const key of state.keys) {
-    if (key.enabled === false) continue;
-    enabledKeyCount += 1;
     const q = state.quotaSummaries?.[key.name] || null;
+    const enabled = key.enabled !== false;
+    const quotaDisabled = !enabled && quotaAutoDisabledKey(key, q);
+    if (enabled) enabledKeyCount += 1;
+    if (!enabled && !quotaDisabled) continue;
+    if (quotaDisabled) quotaDisabledKeyCount += 1;
     const accountId = normalizedAccountId(q?.account_id);
     const groupKey = accountId ? `account:${accountId}` : `key:${key.name}`;
     const candidate = q ? { ...q, account_id: accountId, key_name: key.name } : { key_name: key.name, quota_status: 'unavailable' };
@@ -243,9 +269,7 @@ function buildPoolQuotaSummary() {
     if (q.refresh_status === 'error' || q.last_refresh_error_type) refreshErrorCount += 1;
     if (quotaIsBlocking(q)) blockingCount += 1;
     if (q.available === false || q.supported === false || quotaStatus(q) === 'unavailable') unavailableCount += 1;
-    const budget = finiteNumber(q.monthly_budget);
-    const used = finiteNumber(q.monthly_used);
-    const remaining = finiteNumber(q.monthly_remaining) ?? (budget != null && used != null ? Math.max(0, budget - used) : null);
+    const { budget, used, remaining } = poolQuotaAmounts(q);
     if (budget != null) { monthlyBudget += budget; hasBudget = true; }
     if (used != null) { monthlyUsed += used; hasUsed = true; }
     if (remaining != null) { monthlyRemaining += remaining; hasRemaining = true; }
@@ -261,6 +285,8 @@ function buildPoolQuotaSummary() {
   return {
     key_count: state.keys.length,
     enabled_key_count: enabledKeyCount,
+    accounting_key_count: enabledKeyCount + quotaDisabledKeyCount,
+    quota_disabled_key_count: quotaDisabledKeyCount,
     quota_source_count: groups.size,
     account_count: accountCount,
     unknown_account_source_count: groups.size - accountCount,
@@ -325,6 +351,7 @@ function renderPoolQuota() {
 
   const meta = [];
   if (summary.deduplicated_key_count > 0) meta.push(t('account.poolQuota.deduped', { count: num(summary.deduplicated_key_count) }));
+  if (summary.quota_disabled_key_count > 0) meta.push(t('account.poolQuota.exhaustedIncluded', { count: num(summary.quota_disabled_key_count) }));
   if (summary.blocking_count > 0) meta.push(t('account.poolQuota.blockingSources', { count: num(summary.blocking_count) }));
   if (summary.stale_count > 0) meta.push(t('account.poolQuota.staleSources', { count: num(summary.stale_count) }));
   if (summary.refresh_error_count > 0) meta.push(t('account.poolQuota.refreshErrors', { count: num(summary.refresh_error_count) }));

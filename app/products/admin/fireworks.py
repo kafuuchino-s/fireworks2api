@@ -137,6 +137,56 @@ def _quota_summary(items: list[Any]) -> dict[str, Any]:
     return summary
 
 
+def _quota_summary_from_json(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not value:
+        return {"count": 0}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {"count": 0}
+    return parsed if isinstance(parsed, dict) else {"count": 0}
+
+
+def _normalize_exhausted_quota_summary(summary: dict[str, Any], quota_status: Any) -> dict[str, Any]:
+    status_value = str(quota_status or "").casefold()
+    if status_value not in {"quota_exhausted", "exhausted"}:
+        return summary
+    budget = _quota_number(summary.get("monthly_budget"))
+    if budget is None:
+        return summary
+    normalized = dict(summary)
+    used = _quota_number(normalized.get("monthly_used"))
+    if used is None or float(used) < float(budget):
+        normalized["monthly_used"] = budget
+    normalized["monthly_remaining"] = 0
+    return normalized
+
+
+def _normalize_payload_quota_summary(payload: dict[str, Any]) -> None:
+    summary = _quota_summary_from_json(payload.get("quota_summary_json"))
+    normalized = _normalize_exhausted_quota_summary(summary, payload.get("quota_status"))
+    if normalized is not summary:
+        payload["quota_summary_json"] = json.dumps(normalized, sort_keys=True)
+
+
+def _carry_forward_previous_quota(payload: dict[str, Any], previous_snapshot) -> None:
+    previous_summary = _quota_summary_from_json(_snapshot_value(previous_snapshot, "quota_summary_json"))
+    if _quota_number(previous_summary.get("monthly_budget")) is None:
+        return
+    payload["quota_summary_json"] = json.dumps(previous_summary, sort_keys=True)
+    previous_items = _snapshot_value(previous_snapshot, "quota_items_json")
+    if previous_items:
+        payload["quota_items_json"] = previous_items
+    if not payload.get("last_successful_refresh_at"):
+        payload["last_successful_refresh_at"] = (
+            _snapshot_value(previous_snapshot, "last_successful_refresh_at")
+            or _snapshot_value(previous_snapshot, "quota_refreshed_at")
+        )
+    _normalize_payload_quota_summary(payload)
+
+
 async def _fireworks_account_and_quota_payload(request: Request, account_id: str, api_key: str) -> dict[str, Any]:
     settings = _settings(request)
     normalized_account_id = _normalize_fireworks_account_id(account_id)
@@ -248,7 +298,14 @@ def _response_error_text(response) -> str:
         return ""
 
 
-def _apply_management_error(payload: dict[str, Any], response, *, scope: str, ttl_seconds: int = QUOTA_TTL_SECONDS) -> None:
+def _apply_management_error(
+    payload: dict[str, Any],
+    response,
+    *,
+    scope: str,
+    ttl_seconds: int = QUOTA_TTL_SECONDS,
+    previous_snapshot=None,
+) -> None:
     status_code = getattr(response, "status_code", None)
     body_text = _response_error_text(response)
     decision = classify_fireworks_error(status_code=status_code, body=body_text)
@@ -262,6 +319,7 @@ def _apply_management_error(payload: dict[str, Any], response, *, scope: str, tt
         if decision.error_type == "quota_exhausted":
             payload["suspend_state"] = payload.get("suspend_state") or "suspended"
             payload["account_state"] = payload.get("account_state") or "suspended"
+            _carry_forward_previous_quota(payload, previous_snapshot)
     elif decision.error_type == "auth_error":
         payload["quota_status"] = "auth_error"
     else:
@@ -300,19 +358,23 @@ def _disable_keys_for_snapshot_error(repository, key, payload: dict[str, Any], *
 def _snapshot_response_item(key, snapshot, *, source: str, stale: bool) -> dict[str, Any]:
     quota_summary_json = _snapshot_value(snapshot, "quota_summary_json")
     quota_items_json = _snapshot_value(snapshot, "quota_items_json")
-    quota_summary = json.loads(quota_summary_json) if quota_summary_json else {"count": 0}
+    quota_status = _snapshot_value(snapshot, "quota_status", "unavailable")
+    quota_summary = _normalize_exhausted_quota_summary(_quota_summary_from_json(quota_summary_json), quota_status)
     quota_items = json.loads(quota_items_json) if quota_items_json else []
     return {
         "key_name": key.name,
         "masked_key": redact_secret(key.api_key, visible=6),
         "enabled": getattr(key, "enabled", None),
+        "disabled_reason": getattr(key, "disabled_reason", None),
+        "last_error_type": getattr(key, "last_error_type", None),
+        "last_error_at": getattr(key, "last_error_at", None),
         "account_id": _snapshot_value(snapshot, "account_id"),
         "account_label": _snapshot_value(snapshot, "account_label"),
         "account_state": _snapshot_value(snapshot, "account_state"),
         "suspend_state": _snapshot_value(snapshot, "suspend_state"),
         "quota_supported": bool(_snapshot_value(snapshot, "quota_supported")) if _snapshot_value(snapshot, "quota_supported") is not None else False,
         "quota_status_code": _snapshot_value(snapshot, "quota_status_code"),
-        "quota_status": _snapshot_value(snapshot, "quota_status", "unavailable"),
+        "quota_status": quota_status,
         "quota_items": quota_items,
         "quota_summary": quota_summary,
         "source": source,
@@ -359,12 +421,37 @@ def _pool_number(summary: dict[str, Any], name: str) -> float | int | None:
     return _quota_number(summary.get(name))
 
 
+def _quota_auto_disabled_item(item: dict[str, Any]) -> bool:
+    return (
+        item.get("enabled") is False
+        and item.get("disabled_reason") == "upstream_account_unavailable"
+        and item.get("last_error_type") == "quota_exhausted"
+    )
+
+
+def _has_pool_monthly_budget(item: dict[str, Any]) -> bool:
+    summary = item.get("quota_summary") if isinstance(item.get("quota_summary"), dict) else {}
+    return _pool_number(summary, "monthly_budget") is not None
+
+
+def _pool_accounting_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    accounting_items = []
+    for item in items:
+        if item.get("enabled") is not False:
+            accounting_items.append(item)
+        elif _quota_auto_disabled_item(item) and _has_pool_monthly_budget(item):
+            accounting_items.append(item)
+    return accounting_items
+
+
 def _fireworks_key_pool_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
     enabled_items = [item for item in items if item.get("enabled") is not False]
+    accounting_items = _pool_accounting_items(items)
+    quota_disabled_items = [item for item in accounting_items if _quota_auto_disabled_item(item)]
     groups: dict[str, dict[str, Any]] = {}
     group_kinds: dict[str, str] = {}
     grouped_key_counts: dict[str, int] = {}
-    for item in enabled_items:
+    for item in accounting_items:
         group_key, kind = _pool_group_key(item)
         grouped_key_counts[group_key] = grouped_key_counts.get(group_key, 0) + 1
         if group_key not in groups or _pool_item_score(item) > _pool_item_score(groups[group_key]):
@@ -433,6 +520,8 @@ def _fireworks_key_pool_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "key_count": len(items),
         "enabled_key_count": len(enabled_items),
+        "accounting_key_count": len(accounting_items),
+        "quota_disabled_key_count": len(quota_disabled_items),
         "quota_source_count": len(groups),
         "account_count": sum(1 for kind in group_kinds.values() if kind == "account"),
         "unknown_account_source_count": sum(1 for kind in group_kinds.values() if kind != "account"),
@@ -482,7 +571,7 @@ async def _refresh_fireworks_key_snapshot(request: Request, key, *, refresh_quot
             account_response = await client.get_json("/v1/accounts")
             if account_response.status_code >= 400:
                 existing = getattr(repository, "get_fireworks_key_snapshot", lambda _fingerprint: None)(payload["key_fingerprint"])
-                _apply_management_error(payload, account_response, scope="account", ttl_seconds=ttl_seconds)
+                _apply_management_error(payload, account_response, scope="account", ttl_seconds=ttl_seconds, previous_snapshot=existing)
                 account_id = _snapshot_value(existing, "account_id")
                 if account_id:
                     payload["account_id"] = account_id
@@ -514,7 +603,7 @@ async def _refresh_fireworks_key_snapshot(request: Request, key, *, refresh_quot
                         quota_response = await client.get_json(f"/v1/accounts/{account_id}/quotas")
                         if quota_response.status_code >= 400:
                             existing = getattr(repository, "get_fireworks_key_snapshot", lambda _fingerprint: None)(payload["key_fingerprint"])
-                            _apply_management_error(payload, quota_response, scope="quota", ttl_seconds=ttl_seconds)
+                            _apply_management_error(payload, quota_response, scope="quota", ttl_seconds=ttl_seconds, previous_snapshot=existing)
                             payload["consecutive_refresh_failures"] = int(_snapshot_value(existing, "consecutive_refresh_failures", 0) or 0) + 1
                             upsert_snapshot = getattr(repository, "upsert_fireworks_key_snapshot", None)
                             if callable(upsert_snapshot):
@@ -561,6 +650,8 @@ async def _refresh_fireworks_key_snapshot(request: Request, key, *, refresh_quot
                 payload["quota_supported"] = False
                 payload["quota_refreshed_at"] = datetime.now(UTC).isoformat()
                 payload["stale_after"] = (datetime.now(UTC) + timedelta(seconds=ttl_seconds)).isoformat()
+                if decision.error_type == "quota_exhausted":
+                    _normalize_payload_quota_summary(payload)
         payload["refresh_status"] = "error"
         payload["last_refresh_error_type"] = payload.get("last_refresh_error_type") or exc.__class__.__name__
         payload["last_refresh_error"] = payload.get("last_refresh_error") or str(exc)
@@ -696,6 +787,7 @@ async def list_fireworks_key_quota_summaries(request: Request, refresh: str = "a
             _set_global_refresh_finished(success=False)
             raise
 
+    keys = repository.list_keys(include_disabled=True)
     return _build_response()
 
 
