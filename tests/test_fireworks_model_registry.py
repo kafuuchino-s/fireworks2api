@@ -27,6 +27,11 @@ def test_registry_includes_verified_capability_metadata() -> None:
     assert glm_fast["supported_functionality"]["function_calling"] is True
     assert glm_fast["supported_functionality"]["image_input"] is False
 
+    minimax_m3 = official_model_metadata("accounts/fireworks/models/minimax-m3")
+    assert minimax_m3["supported_functionality"]["context_length"] == 524288
+    assert minimax_m3["supported_functionality"]["function_calling"] is True
+    assert minimax_m3["supported_functionality"]["image_input"] is True
+
 
 def test_registry_includes_deepseek_v4_flash_serverless_metadata() -> None:
     flash = official_model_metadata("deepseek-v4-flash")
@@ -38,7 +43,7 @@ def test_registry_includes_deepseek_v4_flash_serverless_metadata() -> None:
     assert flash["supported_functionality"]["function_calling"] is True
     assert flash["supported_functionality"]["image_input"] is False
     assert flash["pricing"]["standard"]["input"] == 0.14
-    assert flash["pricing"]["standard"]["cached_input"] == 0.03
+    assert flash["pricing"]["standard"]["cached_input"] == 0.028
     assert flash["pricing"]["standard"]["output"] == 0.28
     assert flash["source_url"] == "https://fireworks.ai/models/deepseek-ai/deepseek-v4-flash"
     assert suggest_aliases_for_model("accounts/fireworks/models/deepseek-v4-flash") == ["deepseek-v4-flash"]
@@ -56,6 +61,44 @@ def test_pricing_tiers_are_distinct_and_copied() -> None:
     assert lookup_official_pricing("accounts/fireworks/routers/glm-5p1-fast", tier="fast")["input"] == 2.8
     standard["input"] = 123
     assert lookup_official_pricing("accounts/fireworks/models/kimi-k2p6", tier="standard")["input"] == 0.95
+
+
+def test_new_models_from_2026_06_13_announcement() -> None:
+    """Verify the newly announced models are registered with correct metadata."""
+    # Kimi K2.7 Code
+    kimi27 = official_model_metadata("kimi-k2.7-code")
+    assert kimi27["upstream_model"] == "accounts/fireworks/models/kimi-k2p7-code"
+    assert kimi27["pricing"]["standard"]["input"] == 0.95
+    assert kimi27["pricing"]["standard"]["cached_input"] == 0.19
+    assert kimi27["pricing"]["standard"]["output"] == 4.0
+    assert kimi27["pricing"]["priority"]["input"] == 1.425
+
+    # Kimi K2.7 Code Fast
+    kimi27_fast = official_model_metadata("kimi-k2.7-code-fast")
+    assert kimi27_fast["upstream_model"] == "accounts/fireworks/routers/kimi-k2p7-code-fast"
+    assert kimi27_fast["pricing"]["fast"]["input"] == 1.9
+
+    # MiniMax M3
+    minimax_m3 = official_model_metadata("MiniMax-M3")
+    assert minimax_m3["upstream_model"] == "accounts/fireworks/models/minimax-m3"
+    assert minimax_m3["pricing"]["standard"]["input"] == 0.3
+    assert minimax_m3["pricing"]["priority"]["input"] == 0.45
+
+    # Qwen 3.7 Plus
+    qwen37 = official_model_metadata("qwen-3.7-plus")
+    assert qwen37["upstream_model"] == "accounts/fireworks/models/qwen3p7-plus"
+    assert qwen37["pricing"]["standard"]["input"] == 0.4
+    assert qwen37["supported_functionality"]["image_input"] is True
+
+    # Qwen 3.6 Plus
+    qwen36 = official_model_metadata("qwen-3.6-plus")
+    assert qwen36["upstream_model"] == "accounts/fireworks/models/qwen3p6-plus"
+    assert qwen36["pricing"]["standard"]["input"] == 0.5
+
+    # NVIDIA Nemotron 3 Ultra
+    nemotron = official_model_metadata("nemotron-3-ultra")
+    assert nemotron["upstream_model"] == "accounts/fireworks/models/nemotron-3-ultra-nvfp4"
+    assert nemotron["pricing"]["standard"]["input"] == 0.6
 
 
 def test_unknown_model_has_no_alias_or_pricing() -> None:

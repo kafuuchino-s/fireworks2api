@@ -108,13 +108,19 @@ class ResponseSessionBindingRecord:
 
 
 DEFAULT_MODELS = [
+    ModelMapping("kimi-k2.7-code", "accounts/fireworks/models/kimi-k2p7-code"),
+    ModelMapping("kimi-k2.7-code-fast", "accounts/fireworks/routers/kimi-k2p7-code-fast"),
     ModelMapping("kimi-k2.6", "accounts/fireworks/models/kimi-k2p6"),
     ModelMapping("kimi-k2.6-turbo", "accounts/fireworks/routers/kimi-k2p6-turbo"),
     ModelMapping("glm-5.1", "accounts/fireworks/models/glm-5p1"),
     ModelMapping("glm-5.1-fast", "accounts/fireworks/routers/glm-5p1-fast"),
     ModelMapping("deepseek-v4-pro", "accounts/fireworks/models/deepseek-v4-pro"),
     ModelMapping("deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-flash"),
+    ModelMapping("MiniMax-M3", "accounts/fireworks/models/minimax-m3"),
     ModelMapping("MiniMax-M2.7", "accounts/fireworks/models/minimax-m2p7"),
+    ModelMapping("qwen-3.7-plus", "accounts/fireworks/models/qwen3p7-plus"),
+    ModelMapping("qwen-3.6-plus", "accounts/fireworks/models/qwen3p6-plus"),
+    ModelMapping("nemotron-3-ultra", "accounts/fireworks/models/nemotron-3-ultra-nvfp4"),
 ]
 
 

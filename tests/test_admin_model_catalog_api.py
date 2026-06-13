@@ -60,7 +60,7 @@ def test_admin_fireworks_models_default_official_registry(monkeypatch):
     assert flash["missing_aliases"] == []
     assert flash["supported_functionality"]["serverless"] is True
     assert flash["pricing"]["standard"]["input"] == 0.14
-    assert flash["pricing"]["standard"]["cached_input"] == 0.03
+    assert flash["pricing"]["standard"]["cached_input"] == 0.028
     assert flash["pricing"]["standard"]["output"] == 0.28
 
 
