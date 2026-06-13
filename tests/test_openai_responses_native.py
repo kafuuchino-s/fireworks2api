@@ -296,7 +296,7 @@ def test_build_responses_adapter_normalizes_official_image_and_function_outputs(
 
     assert "type" not in payload["input"][0]
     assert payload["input"][0]["role"] == "user"
-    assert payload["input"][0]["content"][0] == {"type": "image", "image_url": {"url": "https://example.com/cat.png", "detail": "high"}}
+    assert payload["input"][0]["content"][0] == {"type": "input_image", "image_url": "https://example.com/cat.png"}
     assert payload["input"][1] == {"type": "function_call_output", "call_id": "call_1", "output": "done"}
 
 
@@ -367,7 +367,7 @@ def test_build_responses_adapter_normalizes_sub2api_bridge_payload() -> None:
     payload, _, report = native_responses.build_responses_adapter(context)
 
     assert payload["input"][0] == {"role": "developer", "content": [{"type": "input_text", "text": "system prompt"}]}
-    assert payload["input"][1] == {"role": "user", "content": [{"type": "image", "image_url": {"url": "data:image/png;base64,AAAA"}}]}
+    assert payload["input"][1] == {"role": "user", "content": [{"type": "input_image", "image_url": "data:image/png;base64,AAAA"}]}
     assert payload["input"][2] == {"role": "assistant", "content": [{"type": "input_text", "text": "prior"}]}
     assert payload["input"][3] == {"type": "function_call", "call_id": "toolu_123", "name": "Read", "arguments": "{}"}
     assert payload["input"][4] == {"type": "function_call_output", "call_id": "toolu_123", "output": "done"}
@@ -401,7 +401,7 @@ def test_build_responses_adapter_drops_sub2api_empty_text_placeholders() -> None
     assert payload["input"][0] == {
         "role": "user",
         "content": [
-            {"type": "image", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
             {"type": "text", "text": "describe"},
         ],
     }
@@ -469,7 +469,7 @@ def test_build_responses_adapter_normalizes_sub2api_chat_bridge_payload() -> Non
     payload, _, report = native_responses.build_responses_adapter(context)
 
     assert payload["input"][0] == {"role": "system", "content": "system prompt"}
-    assert payload["input"][1] == {"role": "user", "content": [{"type": "image", "image_url": {"url": "data:image/png;base64,AAAA"}}]}
+    assert payload["input"][1] == {"role": "user", "content": [{"type": "input_image", "image_url": "data:image/png;base64,AAAA"}]}
     assert payload["input"][2] == {"role": "assistant", "content": [{"type": "input_text", "text": "prior"}]}
     assert payload["input"][3] == {"type": "function_call", "call_id": "call_1", "name": "ping", "arguments": "{}"}
     assert payload["input"][4] == {"type": "function_call_output", "call_id": "call_1", "output": "pong"}

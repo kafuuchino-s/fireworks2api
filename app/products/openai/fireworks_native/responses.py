@@ -36,24 +36,28 @@ def _normalize_responses_input_part(part: dict[str, Any]) -> dict[str, Any]:
     part_type = part.get("type")
     if part_type == "output_text":
         return {"type": "input_text", "text": part["text"]}
-    if part_type == "input_image":
-        image = part.get("image_url") or {}
-        if isinstance(image, str):
-            normalized_image = {"url": image}
+    if part_type in {"input_image", "image"}:
+        # Fireworks Responses API accepts the OpenAI-compatible shape where
+        # image_url is a string URL (https://... or data:image/...).  The
+        # object form {"url": ..., "detail": ...} is rejected by Fireworks,
+        # so we drop "detail" and forward the bare URL string.
+        image_url = part.get("image_url")
+        if isinstance(image_url, str):
+            url = image_url
+        elif isinstance(image_url, dict):
+            url = image_url.get("url")
         else:
-            normalized_image = {"url": image["url"]}
-            if "detail" in image:
-                normalized_image["detail"] = image["detail"]
-        return {"type": "image", "image_url": normalized_image}
-    if part_type == "image":
-        image = part.get("image_url") or part.get("image") or part.get("source") or {}
-        if isinstance(image, str):
-            normalized_image = {"url": image}
-        else:
-            normalized_image = {"url": image["url"]}
-            if "detail" in image:
-                normalized_image["detail"] = image["detail"]
-        return {"type": "image", "image_url": normalized_image}
+            # Also support the "image" field used by some Anthropic-style shapes.
+            image = part.get("image")
+            if isinstance(image, str):
+                url = image
+            elif isinstance(image, dict):
+                url = image.get("url")
+            else:
+                url = None
+        if not isinstance(url, str):
+            return part
+        return {"type": "input_image", "image_url": url}
     return part
 
 
@@ -204,25 +208,26 @@ def _validate_responses_input_part(part: Any, *, item_index: int, part_index: in
         if not _is_nonempty_str(part.get("text")):
             raise_openai_error("text input parts require text", param=f"input[{item_index}].content[{part_index}].text", code="invalid_request_error")
         return
-    image = part.get("image_url") or part.get("image") or part.get("source")
-    if isinstance(image, str):
-        url = image
-    elif isinstance(image, dict) and image:
-        url = image.get("url")
+    image_url = part.get("image_url")
+    if isinstance(image_url, str):
+        url = image_url
+    elif isinstance(image_url, dict) and image_url:
+        url = image_url.get("url")
     else:
-        raise_openai_error("input_image parts require image_url.url", param=f"input[{item_index}].content[{part_index}].image_url.url", code="invalid_request_error")
+        # Allow the "image" field used by some Anthropic-style shapes.
+        image = part.get("image")
+        if isinstance(image, str):
+            url = image
+        elif isinstance(image, dict) and image:
+            url = image.get("url")
+        else:
+            raise_openai_error("input_image parts require image_url.url", param=f"input[{item_index}].content[{part_index}].image_url.url", code="invalid_request_error")
     if not _is_nonempty_str(url):
         raise_openai_error("input_image parts require image_url.url", param=f"input[{item_index}].content[{part_index}].image_url.url", code="invalid_request_error")
     if not (url.startswith("https://") or url.startswith("data:image/")):
         raise_openai_error("input_image parts require https:// or data:image/ URLs", param=f"input[{item_index}].content[{part_index}].image_url.url", code="invalid_request_error")
     if url.startswith("data:image/") and ";base64," not in url:
         raise_openai_error("input_image data URLs must be base64-encoded", param=f"input[{item_index}].content[{part_index}].image_url.url", code="invalid_request_error")
-    if isinstance(image, dict):
-        for key in image:
-            if key not in {"url", "detail"}:
-                raise_openai_error(f"unsupported input_image field '{key}'", param=f"input[{item_index}].content[{part_index}].image_url.{key}", code="unsupported_parameter")
-        if "detail" in image and not _is_nonempty_str(image["detail"]):
-            raise_openai_error("input_image.detail must be a string", param=f"input[{item_index}].content[{part_index}].image_url.detail", code="invalid_request_error")
 
 
 def _validate_responses_input_message(

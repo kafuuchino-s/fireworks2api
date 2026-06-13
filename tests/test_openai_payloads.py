@@ -738,7 +738,7 @@ def test_responses_adapter_normalizes_official_image_and_function_outputs() -> N
 
     payload = build_responses_upstream_payload(context)
 
-    assert payload["input"][0]["content"][0] == {"type": "image", "image_url": {"url": "https://example.com/cat.png"}}
+    assert payload["input"][0]["content"][0] == {"type": "input_image", "image_url": "https://example.com/cat.png"}
     assert payload["input"][1] == {"type": "function_call_output", "call_id": "call_1", "output": "done"}
 
 
