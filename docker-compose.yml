@@ -1,6 +1,6 @@
 services:
   fireworks2api:
-    image: kafuuchino520/fireworks2api:latest
+    image: ghcr.io/kafuuchino-s/fireworks2api:latest
     container_name: fireworks2api
     env_file:
       - .env

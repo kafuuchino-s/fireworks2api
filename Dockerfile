@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 
+LABEL org.opencontainers.image.source="https://github.com/kafuuchino-s/fireworks2api" \
+    org.opencontainers.image.description="Fireworks API proxy with OpenAI-compatible routes and an Admin dashboard"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
