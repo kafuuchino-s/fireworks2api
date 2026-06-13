@@ -109,7 +109,7 @@ async def test_openai_sdk_compat_path_and_auth(monkeypatch: pytest.MonkeyPatch) 
         captured["x_api_key"] = request.headers.get("x-api-key")
         return SimpleNamespace(
             body=body,
-            resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/kimi-k2p6"),
+            resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/glm-5p1"),
             request_headers={"x-session-affinity": "session-affinity"},
             stable_key="stable-key",
             settings=SimpleNamespace(affinity_hash_secret="affinity", log_hash_secret="log", upstream_base_url="https://api.fireworks.ai/inference", anthropic_messages_mode="native"),
@@ -134,7 +134,7 @@ async def test_openai_sdk_compat_path_and_auth(monkeypatch: pytest.MonkeyPatch) 
     assert captured["authorization"] == "Bearer token"
     assert captured["endpoint"] == "responses"
     assert captured["upstream_path"] == "v1/responses"
-    assert captured["payload_model"] == "accounts/fireworks/models/kimi-k2p6"
+    assert captured["payload_model"] == "accounts/fireworks/models/glm-5p1"
 
 
 @pytest.mark.asyncio
@@ -150,7 +150,7 @@ async def test_anthropic_sdk_compat_version_and_auth(monkeypatch: pytest.MonkeyP
         captured["anthropic_version"] = request.headers.get("anthropic-version")
         return SimpleNamespace(
             body=body,
-            resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/kimi-k2p6"),
+            resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/glm-5p1"),
             request_headers={"x-session-affinity": "session-affinity"},
             stable_key="stable-key",
             settings=SimpleNamespace(affinity_hash_secret="affinity", log_hash_secret="log", upstream_base_url="https://api.fireworks.ai/inference"),
@@ -175,7 +175,7 @@ async def test_anthropic_sdk_compat_version_and_auth(monkeypatch: pytest.MonkeyP
     assert captured["anthropic_version"] == "2023-06-01"
     assert captured["endpoint"] == "messages"
     assert captured["upstream_path"] == "v1/messages"
-    assert captured["payload_model"] == "accounts/fireworks/models/kimi-k2p6"
+    assert captured["payload_model"] == "accounts/fireworks/models/glm-5p1"
 
 
 @pytest.mark.asyncio
@@ -187,7 +187,7 @@ async def test_openai_responses_sdk_shaped_fixtures(monkeypatch: pytest.MonkeyPa
         seen.append({"path": request.url.path, "body": body})
         return SimpleNamespace(
             body=body,
-            resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/kimi-k2p6"),
+            resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/glm-5p1"),
             request_headers={"x-session-affinity": "session-affinity"},
             stable_key="stable-key",
             settings=SimpleNamespace(affinity_hash_secret="affinity", log_hash_secret="log", upstream_base_url="https://api.fireworks.ai/inference"),

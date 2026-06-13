@@ -105,9 +105,9 @@ async def _handle_messages(request: Request):
 
 
 async def _handle_messages_native(request: Request, context, body: dict):
-    payload, headers = build_messages_adapter(context)
+    payload, headers, report = build_messages_adapter(context)
     capabilities = classify_reasoning_model(getattr(getattr(context, "resolved_model", None), "upstream_model", ""))
-    warnings: list[str] = []
+    warnings: list[str] = list(report["warnings"])
     if body.get("thinking") is not None and capabilities.supports_thinking is False:
         warnings.append("thinking is likely unsupported for this upstream model family")
     upstream_base_url = getattr(getattr(context, "settings", None), "upstream_base_url", "")
@@ -121,6 +121,8 @@ async def _handle_messages_native(request: Request, context, body: dict):
             "payload_field_names": tuple(payload.keys()),
             "forwarded_headers": headers,
         },
+        field_actions=report["field_changes"],
+        warnings=warnings,
         routing_metadata={
             "stable_key_source": getattr(context, "stable_key_source", None),
             "stable_key_hash_value": getattr(context, "stable_key_hash_value", None),
@@ -131,7 +133,7 @@ async def _handle_messages_native(request: Request, context, body: dict):
     )
     if _message_has_image(body):
         route_trace["capability_tags"] = tuple(sorted(set(route_trace.get("capability_tags", ())) | {"image"}))
-    record_proxy_transform_debug(context, endpoint="messages", upstream_endpoint=upstream_path, payload=payload, headers=headers, stream=bool(payload.get("stream")), service_tier=payload.get("service_tier") if isinstance(payload.get("service_tier"), str) else None, warnings=warnings)
+    record_proxy_transform_debug(context, endpoint="messages", upstream_endpoint=upstream_path, payload=payload, headers=headers, stream=bool(payload.get("stream")), service_tier=payload.get("service_tier") if isinstance(payload.get("service_tier"), str) else None, field_changes=report["field_changes"], warnings=warnings)
     proxy_call = proxy_fireworks_request
     if "route_trace" in inspect.signature(proxy_call).parameters:
         return await proxy_call(context, endpoint="messages", upstream_path=upstream_path, payload=payload, headers=headers, route_trace=route_trace)

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
+import pytest
 from pytest import MonkeyPatch
 
 import app.products.anthropic.router as anthropic_router
@@ -23,6 +24,16 @@ def _require_auth(monkeypatch: MonkeyPatch) -> None:
 
 def _anthropic_headers() -> dict[str, str]:
     return {"Authorization": "Bearer token", "anthropic-version": "2023-06-01"}
+
+
+def _messages_adapter_context(body: dict[str, object], upstream_model: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        body=body,
+        resolved_model=SimpleNamespace(upstream_model=upstream_model),
+        request_headers={},
+        stable_key="stable-key",
+        settings=SimpleNamespace(affinity_hash_secret="affinity", log_hash_secret="log"),
+    )
 
 
 def test_anthropic_messages_routes_accept_proxy_auth(monkeypatch: MonkeyPatch) -> None:
@@ -232,7 +243,7 @@ def test_anthropic_messages_routes_reject_unknown_fields_locally(monkeypatch: Mo
 
 
 def test_anthropic_messages_adapter_forwards_documented_fireworks_fields() -> None:
-    payload, _ = build_messages_adapter(
+    payload, _, _ = build_messages_adapter(
         SimpleNamespace(
             body={
                 "model": "kimi-k2.6",
@@ -260,6 +271,43 @@ def test_anthropic_messages_adapter_forwards_documented_fireworks_fields() -> No
     assert payload["tools"] == [{"name": "calculator"}]
     assert payload["tool_choice"] == "auto"
     assert payload["service_tier"] == "priority"
+
+
+@pytest.mark.parametrize(
+    "upstream_model",
+    [
+        "accounts/fireworks/models/deepseek-v4-pro",
+        "accounts/fireworks/models/deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+    ],
+)
+def test_anthropic_messages_adapter_injects_reasoning_top_k_default(upstream_model: str) -> None:
+    payload, _, report = build_messages_adapter(
+        _messages_adapter_context(
+            {"model": "kimi-k2.6", "messages": [{"role": "user", "content": "hello"}], "max_tokens": 1},
+            upstream_model,
+        )
+    )
+
+    assert payload["top_k"] == 40
+    assert {"field": "top_k", "action": "default", "reason": "fireworks_reasoning_sampling_stability"} in report["field_changes"]
+    assert "top_k injected default 40 for Fireworks reasoning stability" in report["warnings"]
+
+
+def test_anthropic_messages_adapter_preserves_explicit_top_k() -> None:
+    payload, _, report = build_messages_adapter(
+        _messages_adapter_context(
+            {"model": "kimi-k2.6", "messages": [{"role": "user", "content": "hello"}], "max_tokens": 1, "top_k": 50},
+            "accounts/fireworks/models/kimi-k2p6",
+        )
+    )
+
+    assert payload["top_k"] == 50
+    assert payload["thinking"] == {"type": "disabled"}
+    assert payload["temperature"] == 0.6
+    assert payload["top_p"] == 0.95
+    assert not any(change["field"] == "top_k" for change in report["field_changes"])
 
 
 def test_anthropic_messages_adapter_accepts_official_tool_choice_object_shape(monkeypatch: MonkeyPatch) -> None:
@@ -538,7 +586,7 @@ def test_anthropic_messages_adapter_requires_max_tokens(monkeypatch: MonkeyPatch
 
 
 def test_anthropic_messages_adapter_omits_default_service_tier() -> None:
-    payload, _ = build_messages_adapter(
+    payload, _, _ = build_messages_adapter(
         SimpleNamespace(
             body={"model": "kimi-k2.6", "messages": [{"role": "user", "content": "hello"}], "max_tokens": 1, "service_tier": "default"},
             resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/kimi-k2p6"),
@@ -552,7 +600,7 @@ def test_anthropic_messages_adapter_omits_default_service_tier() -> None:
 
 
 def test_anthropic_messages_adapter_omits_auto_service_tier() -> None:
-    payload, _ = build_messages_adapter(
+    payload, _, _ = build_messages_adapter(
         SimpleNamespace(
             body={"model": "kimi-k2.6", "messages": [{"role": "user", "content": "hello"}], "max_tokens": 1, "service_tier": "auto"},
             resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/kimi-k2p6"),

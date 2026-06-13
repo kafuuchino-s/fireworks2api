@@ -15,7 +15,14 @@ dist/
 build/
 *.egg-info/
 grok2api/
-docs/fireworks/
+docs/
+opencode.json
+
+# Local agent/planning notes kept private when publishing the repo.
+/AGENTS.md
+/CLAUDE.md
+/fireworks2api_prompt.md
+/fireworks2api_lessons_learned.md
 
 # Local UI review screenshots kept at the project root.
 /*.png

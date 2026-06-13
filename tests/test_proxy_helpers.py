@@ -11,6 +11,7 @@ from app.products.openai.proxy_common import (
     build_responses_upstream_payload,
 )
 from app.products.openai.errors import OpenAIRequestError
+from app.products.openai.fireworks_native.chat import build_chat_adapter
 from app.products.openai.fireworks_native import responses as native_responses
 from app.products.openai.transform_debug import build_transform_debug_summary, record_transform_debug
 from app.dataplane.routing.failover import classify_upstream_failure
@@ -73,6 +74,98 @@ def test_chat_payload_rejects_conflicting_reasoning_fields() -> None:
 
     with pytest.raises(Exception):
         build_chat_upstream_payload(context)
+
+
+@pytest.mark.parametrize(
+    "upstream_model",
+    [
+        "accounts/fireworks/models/deepseek-v4-pro",
+        "accounts/fireworks/models/deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+    ],
+)
+def test_chat_payload_injects_reasoning_top_k_default(upstream_model: str) -> None:
+    context = _context(resolved_model=SimpleNamespace(upstream_model=upstream_model))
+
+    payload, _, report = build_chat_adapter(context)
+
+    assert payload["top_k"] == 40
+    assert {"field": "top_k", "action": "default", "reason": "fireworks_reasoning_sampling_stability"} in report["field_changes"]
+    assert "top_k injected default 40 for Fireworks reasoning stability" in report["warnings"]
+
+
+def test_chat_payload_injects_reasoning_top_k_default_for_null() -> None:
+    context = _context(
+        resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/deepseek-v4-pro"),
+        body={"model": "test", "messages": [], "top_k": None},
+    )
+
+    payload = build_chat_upstream_payload(context)
+
+    assert payload["top_k"] == 40
+
+
+@pytest.mark.parametrize("top_k", [0, 50, 100])
+def test_chat_payload_preserves_explicit_top_k(top_k: int) -> None:
+    context = _context(
+        resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/deepseek-v4-pro"),
+        body={"model": "test", "messages": [], "top_k": top_k},
+    )
+
+    payload = build_chat_upstream_payload(context)
+
+    assert payload["top_k"] == top_k
+
+def test_chat_payload_defaults_kimi_k2p6_to_stable_instant_sampling() -> None:
+    context = _context(resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/routers/kimi-k2p6-turbo"))
+
+    payload, _, report = build_chat_adapter(context)
+
+    assert payload["thinking"] == {"type": "disabled"}
+    assert payload["temperature"] == 0.6
+    assert payload["top_p"] == 0.95
+    assert payload["top_k"] == 40
+    assert {"field": "thinking", "action": "default", "to": "disabled", "reason": "kimi_k2p6_fireworks_chat_stability"} in report["field_changes"]
+
+
+def test_chat_payload_preserves_kimi_thinking_enabled_with_fixed_sampling() -> None:
+    context = _context(
+        resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/routers/kimi-k2p6-turbo"),
+        body={"model": "test", "messages": [], "thinking": {"type": "enabled"}},
+    )
+
+    payload, _, report = build_chat_adapter(context)
+
+    assert payload["thinking"] == {"type": "enabled"}
+    assert payload["temperature"] == 1.0
+    assert payload["top_p"] == 0.95
+    assert payload["top_k"] == 40
+    assert not any(change["field"] == "thinking" for change in report["field_changes"])
+
+
+def test_chat_payload_preserves_kimi_reasoning_effort_without_injecting_thinking() -> None:
+    context = _context(
+        resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/routers/kimi-k2p6-turbo"),
+        body={"model": "test", "messages": [], "reasoning_effort": "high"},
+    )
+
+    payload, _, report = build_chat_adapter(context)
+
+    assert payload["reasoning_effort"] == "high"
+    assert "thinking" not in payload
+    assert payload["temperature"] == 1.0
+    assert payload["top_p"] == 0.95
+    assert payload["top_k"] == 40
+    assert not any(change["field"] == "thinking" for change in report["field_changes"])
+
+
+def test_chat_payload_does_not_inject_reasoning_top_k_for_other_models() -> None:
+    context = _context(resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/glm-5p1"))
+
+    payload = build_chat_upstream_payload(context)
+
+    assert "top_k" not in payload
 
 
 class _DummyRequest:
@@ -199,6 +292,14 @@ def test_priority_responses_are_rejected() -> None:
 
     assert exc.value.code == "unsupported_parameter"
     assert "service_tier" in str(exc.value)
+
+
+def test_native_responses_rejects_top_k() -> None:
+    with pytest.raises(OpenAIRequestError) as exc:
+        native_responses.validate_responses_body({"model": "test", "input": "hello", "top_k": 40})
+
+    assert exc.value.param == "top_k"
+    assert exc.value.code == "unknown_parameter"
 
 
 def test_usage_parser_handles_cached_tokens() -> None:

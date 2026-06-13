@@ -4,6 +4,7 @@ from typing import Any
 
 from app.dataplane.fireworks.contracts import FIREWORKS_COMPLETIONS_SUPPORTED_FIELDS
 from app.dataplane.fireworks.reasoning_capabilities import classify_reasoning_model
+from app.dataplane.fireworks.sampling_defaults import apply_model_sampling_defaults
 from app.products.openai.errors import raise_openai_error
 
 from .common import COMPLETIONS_NESTED_FIELDS, COMPLETIONS_PUBLIC_FIELDS, _copy_allowed, count_prompt_images, _validate_bool, _validate_float_range, _validate_int_range, _validate_object, _validate_prompt, _validate_images
@@ -16,7 +17,8 @@ def validate_completions_body(body: dict[str, Any]) -> None:
     _validate_int_range(body, "n", min_value=1, max_value=128)
     _validate_float_range(body, "temperature", min_value=0, max_value=2)
     _validate_float_range(body, "top_p", min_value=0, max_value=1)
-    _validate_int_range(body, "top_k", min_value=0, max_value=100)
+    if body.get("top_k") is not None:
+        _validate_int_range(body, "top_k", min_value=0, max_value=100)
     _validate_int_range(body, "max_tokens", positive=True)
     _validate_int_range(body, "max_completion_tokens", positive=True)
     _validate_bool(body, "stream")
@@ -90,7 +92,11 @@ def build_completions_adapter(context) -> tuple[dict[str, Any], dict[str, str], 
     for field in COMPLETIONS_NESTED_FIELDS:
         if field in body:
             payload[field] = body[field]
-    payload["model"] = context.resolved_model.upstream_model
+    upstream_model = context.resolved_model.upstream_model
+    payload["model"] = upstream_model
+    sampling_changes, sampling_warnings = apply_model_sampling_defaults(payload, upstream_model)
+    field_changes.extend(sampling_changes)
+    warnings.extend(sampling_warnings)
     headers = build_adapter_headers(context)
     field_changes.insert(0, {"field": "model", "to": "model"})
     return payload, headers, {"field_changes": field_changes, "warnings": warnings}

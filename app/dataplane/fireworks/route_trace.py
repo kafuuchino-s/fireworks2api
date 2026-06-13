@@ -50,6 +50,7 @@ _SAFE_ACTION_VALUES = {
     "drop",
     "rename",
     "map",
+    "default",
     "preserve",
     "remove",
     "allow",

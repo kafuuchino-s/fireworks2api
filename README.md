@@ -1,4 +1,4 @@
-# fireworks2api
+﻿# fireworks2api
 
 Fireworks API proxy with OpenAI-compatible public routes, Fireworks-native adapters, sticky routing, failover/cooldown, request logs, and an Admin dashboard.
 
@@ -92,23 +92,9 @@ $env:ADMIN_TOKEN="admin-local"
 curl "http://127.0.0.1:8000/admin/transform-debug?has_route_trace=true" -H "Authorization: Bearer admin-local"
 ```
 
-See the detailed trace guide in `docs/route-transform-trace.md`.
+Current checkpoint notes:
 
-## Detailed docs
-
-- `docs/README.md` — documentation index
-- `docs/model-management.md` — model catalog, registry, import, and manual mapping workflow
-- `docs/public-api.md` — public contract summary and route table
-- `docs/public-to-fireworks-adapter-matrix.md` — public field -> adapter -> Fireworks-native mapping
-- `docs/inference-routing.md` — public route -> adapter -> Fireworks-native path mapping
-- `docs/route-transform-trace.md` — trace/debug workflow
-- `docs/fireworks-native-capabilities.md` — verified live smoke scope
-- `docs/fireworks-inference-matrix.md` — inference capability matrix and caveats
-- `docs/release-checkpoint.md` — current release verification status
-
-Current docs checkpoint notes:
-
-- embeddings/rerank live smoke are intentionally skipped per user for now
+- embeddings/rerank live smoke are intentionally skipped for now
 - official SDK smoke has been verified with `openai 2.35.1` and `anthropic 0.100.0` against local `127.0.0.1:8000`
 - no all-Fireworks model guarantee or production MCP SLA is claimed
 

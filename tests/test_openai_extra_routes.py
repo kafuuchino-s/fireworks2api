@@ -60,13 +60,13 @@ def _install_context_stub(monkeypatch: MonkeyPatch, module, model: str = "accoun
         monkeypatch.setattr(module, "build_proxy_context_optional_model", fake_build_proxy_context_from_body)
 
 
-def _adapter_context(body: dict[str, object]) -> SimpleNamespace:
+def _adapter_context(body: dict[str, object], upstream_model: str = "accounts/fireworks/models/test") -> SimpleNamespace:
     return SimpleNamespace(
         body=body,
         settings=SimpleNamespace(affinity_hash_secret="affinity-secret", log_hash_secret="log-secret"),
         request_headers={},
         stable_key="stable",
-        resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/test"),
+        resolved_model=SimpleNamespace(upstream_model=upstream_model),
     )
 
 
@@ -157,6 +157,25 @@ def test_completions_adapter_forwards_documented_fireworks_fields() -> None:
     assert payload["echo_last"] == 5
     assert payload["return_token_ids"] is True
     assert payload["top_k"] == 20
+
+
+@pytest.mark.parametrize(
+    "upstream_model",
+    [
+        "accounts/fireworks/models/deepseek-v4-pro",
+        "accounts/fireworks/models/deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+    ],
+)
+def test_completions_adapter_injects_reasoning_top_k_default(upstream_model: str) -> None:
+    payload, _, report = build_completions_adapter(
+        _adapter_context({"model": "test", "prompt": "hello"}, upstream_model=upstream_model)
+    )
+
+    assert payload["top_k"] == 40
+    assert {"field": "top_k", "action": "default", "reason": "fireworks_reasoning_sampling_stability"} in report["field_changes"]
+    assert "top_k injected default 40 for Fireworks reasoning stability" in report["warnings"]
 
 
 def test_completions_adapter_accepts_token_prompt_and_image_shapes() -> None:

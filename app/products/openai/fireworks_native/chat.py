@@ -4,6 +4,7 @@ from typing import Any
 
 from app.dataplane.fireworks.contracts import FIREWORKS_CHAT_SUPPORTED_FIELDS, OPENAI_TO_FIREWORKS_CHAT_FIELDS
 from app.dataplane.fireworks.reasoning_capabilities import classify_reasoning_model
+from app.dataplane.fireworks.sampling_defaults import apply_model_sampling_defaults
 from app.products.openai.contracts import OPENAI_NOT_CHAT
 from .common import CHAT_NESTED_FIELDS, CHAT_PUBLIC_FIELDS, _copy_allowed, _reject_unknown_or_unsupported, _validate_bool, _validate_float_range, _validate_int_range, _validate_list, _validate_object, _validate_object_or_string
 from app.products.openai.errors import raise_openai_error
@@ -19,7 +20,8 @@ def validate_chat_body(body: dict[str, Any]) -> None:
     _validate_int_range(body, "n", min_value=1, max_value=128)
     _validate_float_range(body, "temperature", min_value=0, max_value=2)
     _validate_float_range(body, "top_p", min_value=0, max_value=1)
-    _validate_int_range(body, "top_k", min_value=0, max_value=100)
+    if body.get("top_k") is not None:
+        _validate_int_range(body, "top_k", min_value=0, max_value=100)
     _validate_int_range(body, "max_tokens", positive=True)
     _validate_int_range(body, "max_completion_tokens", positive=True)
     _validate_bool(body, "stream")
@@ -256,6 +258,10 @@ def build_chat_adapter(context) -> tuple[dict[str, Any], dict[str, str], dict[st
     for field in sorted(set(body) & _OPENAI_CHAT_ACCEPT_DROP_FIELDS):
         field_changes.append({"field": field, "action": "dropped"})
         warnings.append(f"{field} accepted for OpenAI compatibility but not forwarded to Fireworks chat")
-    payload["model"] = context.resolved_model.upstream_model
+    upstream_model = context.resolved_model.upstream_model
+    payload["model"] = upstream_model
+    sampling_changes, sampling_warnings = apply_model_sampling_defaults(payload, upstream_model)
+    field_changes.extend(sampling_changes)
+    warnings.extend(sampling_warnings)
     headers = build_adapter_headers(context)
     return payload, headers, {"field_changes": field_changes, "warnings": warnings}

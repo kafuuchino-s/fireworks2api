@@ -9,8 +9,8 @@ from app.dataplane.fireworks.paths import resolve_inference_path
 from app.dataplane.fireworks.route_trace import build_route_transform_trace
 
 from app.products.openai.fireworks_native.responses import build_responses_adapter, is_sub2api_bridge_shape, validate_responses_body
-from app.products.openai.responses_priority_fallback import build_priority_chat_payload, is_priority_responses_fallback_eligible, synthesize_responses_from_chat
-from app.products.openai.responses_stream import ResponsesSSECanonicalizer, strip_reasoning_output_items
+from app.products.openai.responses_priority_fallback import build_priority_chat_payload, is_priority_responses_fallback_eligible, is_reasoning_responses_fallback_eligible, synthesize_responses_from_chat
+from app.products.openai.responses_stream import ChatCompletionsToResponsesSSE, ResponsesSSECanonicalizer, strip_reasoning_output_items
 from app.products.openai.errors import OpenAIRequestError, openai_error_response_json
 from app.products.openai.proxy_common import (
     build_proxy_context_from_body,
@@ -78,20 +78,35 @@ class ResponsesLifecycleQuery(BaseModel):
 async def _handle_responses(request: Request):
     await ensure_proxy_auth(request)
     body = await load_json_body(request)
+    service_tier = body.get("service_tier")
+    if isinstance(service_tier, str) and service_tier.strip().lower() not in {"priority", "auto", "default", "flex", "scale"}:
+        return openai_error_response_json("service_tier is not supported for responses", param="service_tier", code="unsupported_parameter")
+    context = await build_proxy_context_from_body(request, body)
+    upstream_model = context.resolved_model.upstream_model
+    reasoning_stability_fallback = is_reasoning_responses_fallback_eligible(upstream_model)
     priority_fallback = is_priority_responses_fallback_eligible(body)
-    if priority_fallback:
+    if service_tier is not None and not priority_fallback and not reasoning_stability_fallback:
+        return openai_error_response_json("service_tier is not supported for responses", param="service_tier", code="unsupported_parameter")
+    if reasoning_stability_fallback or priority_fallback:
         try:
-            context = await build_proxy_context_from_body(request, body)
-            payload, report = build_priority_chat_payload(body, upstream_model=context.resolved_model.upstream_model)
+            payload, report = build_priority_chat_payload(
+                body,
+                upstream_model=upstream_model,
+                allow_stream=reasoning_stability_fallback,
+                allow_bridge_drops=reasoning_stability_fallback,
+                fallback_reason="fireworks_reasoning_stability" if reasoning_stability_fallback else "priority",
+            )
         except OpenAIRequestError as exc:
             return openai_error_response_json(exc.message, param=exc.param, code=exc.code)
         upstream_path = resolve_inference_path(getattr(context.settings, "upstream_base_url", ""), "chat_completions")
+        fallback_endpoint = "cross_endpoint_fallback/reasoning_stability:chat_completions" if reasoning_stability_fallback else "cross_endpoint_fallback/priority:chat_completions"
+        service_tier = payload.get("service_tier") if isinstance(payload.get("service_tier"), str) else None
         route_trace = build_route_transform_trace(
             context,
             public_route="POST /v1/responses",
             operation="create",
             adapter="app.products.openai.responses_priority_fallback.build_priority_chat_payload",
-            fireworks_endpoint="cross_endpoint_fallback/priority:chat_completions",
+            fireworks_endpoint=fallback_endpoint,
             payload={"field_names": tuple(sorted(payload.keys()))},
             headers={"header_names": tuple()},
             request_shape={"payload_field_names": tuple(sorted(payload.keys())), "forwarded_headers": {}},
@@ -99,27 +114,41 @@ async def _handle_responses(request: Request):
             warnings=report["warnings"],
             routing_metadata=getattr(context, "routing_metadata", None),
         )
-        record_proxy_transform_debug(context, endpoint="responses", upstream_endpoint=upstream_path, payload=payload, headers={}, stream=False, service_tier="priority", field_changes=report["field_changes"], warnings=report["warnings"])
+        record_proxy_transform_debug(context, endpoint="responses", upstream_endpoint=upstream_path, payload=payload, headers={}, stream=bool(payload.get("stream")), service_tier=service_tier, field_changes=report["field_changes"], warnings=report["warnings"])
+        proxy_kwargs = {
+            "endpoint": "responses",
+            "upstream_path": upstream_path,
+            "payload": payload,
+            "headers": {},
+            "route_trace": route_trace,
+            "bind_response_key_route": False,
+        }
+        if bool(payload.get("stream")):
+            bridge_compat = is_sub2api_bridge_shape(body)
+            proxy_kwargs["stream_transform_factory"] = (
+                lambda: ChatCompletionsToResponsesSSE(
+                    model=body.get("model", ""),
+                    upstream_model=upstream_model,
+                    perf_metrics_in_response=body.get("perf_metrics_in_response") if isinstance(body.get("perf_metrics_in_response"), bool) else None,
+                    service_tier=service_tier,
+                    sub2api_bridge_compat=bridge_compat,
+                )
+            )
+            return await proxy_fireworks_request(context, **proxy_kwargs)
+        proxy_kwargs["response_transform"] = lambda data: synthesize_responses_from_chat(
+            data,
+            model=body.get("model", ""),
+            upstream_model=upstream_model,
+            perf_metrics_in_response=body.get("perf_metrics_in_response") if isinstance(body.get("perf_metrics_in_response"), bool) else None,
+            service_tier=service_tier,
+        )
         return await proxy_fireworks_request(
-            context,
-            endpoint="responses",
-            upstream_path=upstream_path,
-            payload=payload,
-            headers={},
-            route_trace=route_trace,
-            response_transform=lambda data: synthesize_responses_from_chat(
-                data,
-                model=body.get("model", ""),
-                upstream_model=context.resolved_model.upstream_model,
-                perf_metrics_in_response=body.get("perf_metrics_in_response") if isinstance(body.get("perf_metrics_in_response"), bool) else None,
-            ),
-            bind_response_key_route=False,
+            context, **proxy_kwargs
         )
     try:
         validate_responses_body(body)
     except OpenAIRequestError as exc:
         return openai_error_response_json(exc.message, param=exc.param, code=exc.code)
-    context = await build_proxy_context_from_body(request, body)
     previous_response_id = body.get("previous_response_id")
     if isinstance(previous_response_id, str) and previous_response_id.strip():
         routed_key = context.repository.get_response_key_route(previous_response_id)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from app.products.openai.responses_stream import ResponsesSSECanonicalizer
+from app.products.openai.responses_stream import ChatCompletionsToResponsesSSE, ResponsesSSECanonicalizer
 
 
 def _events(raw: bytes) -> list[dict[str, object]]:
@@ -11,6 +11,99 @@ def _events(raw: bytes) -> list[dict[str, object]]:
         data_line = next(line for line in block.split("\n") if line.startswith("data:"))
         events.append(json.loads(data_line[5:].strip()))
     return events
+
+
+def test_chat_completions_stream_converter_emits_responses_events() -> None:
+    converter = ChatCompletionsToResponsesSSE(
+        model="kimi-k2.6",
+        upstream_model="accounts/fireworks/models/kimi-k2p6",
+        sub2api_bridge_compat=True,
+    )
+
+    output = converter.feed(
+        b'data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"delta":{"content":"\xe4\xbd\xa0\xe5\xa5\xbd"},"finish_reason":null}]}\n\n'
+    )
+    output += converter.feed(
+        b'data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5,"prompt_tokens_details":{"cached_tokens":1}}}\n\n'
+    )
+    output += converter.feed(b"data: [DONE]\n\n")
+    output += converter.flush()
+
+    events = _events(output)
+    event_types = [event["type"] for event in events]
+    assert event_types == [
+        "response.created",
+        "response.output_item.added",
+        "response.output_text.delta",
+        "response.output_item.done",
+        "response.completed",
+    ]
+    assert events[2]["delta"] == "你好"
+    # output_item.done closes the message block so sub2api can emit content_block_stop
+    assert events[3]["item"]["type"] == "message"
+    assert events[3]["item"]["status"] == "completed"
+    completed = events[-1]["response"]
+    assert completed["id"] == "resp_fallback_chatcmpl_1"
+    assert completed["output"][0]["content"][0]["text"] == "你好"
+    assert completed["usage"]["input_tokens"] == 3
+    assert completed["usage"]["input_tokens_details"]["cached_tokens"] == 1
+
+
+def test_chat_completions_stream_converter_keeps_reasoning_separate_from_output_text() -> None:
+    converter = ChatCompletionsToResponsesSSE(
+        model="kimi-k2.6",
+        upstream_model="accounts/fireworks/models/kimi-k2p6",
+        sub2api_bridge_compat=True,
+    )
+
+    output = converter.feed(
+        b'data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"delta":{"reasoning_content":"plan"},"finish_reason":null}]}\n\n'
+    )
+    output += converter.feed(
+        b'data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"delta":{"content":"answer"},"finish_reason":null}]}\n\n'
+    )
+    output += converter.feed(b"data: [DONE]\n\n")
+
+    events = _events(output)
+    event_types = [event["type"] for event in events]
+    assert "response.output_item.added" in event_types
+    assert "response.reasoning_summary_part.added" in event_types
+    assert "response.reasoning_summary_text.delta" in event_types
+    assert "response.output_text.delta" in event_types
+    # reasoning is closed with part.done and output_item.done
+    assert "response.reasoning_summary_text.done" in event_types
+    assert "response.reasoning_summary_part.done" in event_types
+    # message block is closed with output_item.done so sub2api can close content blocks
+    assert "response.output_item.done" in event_types
+    assert [event.get("delta") for event in events if event["type"] == "response.output_text.delta"] == ["answer"]
+    completed = events[-1]["response"]
+    assert completed["output"][0]["type"] == "reasoning"
+    assert completed["output"][1]["content"][0]["text"] == "answer"
+
+
+def test_chat_completions_stream_converter_emits_tool_call_lifecycle() -> None:
+    converter = ChatCompletionsToResponsesSSE(
+        model="kimi-k2.6",
+        upstream_model="accounts/fireworks/models/kimi-k2p6",
+        sub2api_bridge_compat=True,
+    )
+
+    output = converter.feed(
+        b'data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":"}}]},"finish_reason":null}]}\n\n'
+    )
+    output += converter.feed(
+        b'data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"k\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n'
+    )
+    output += converter.feed(b"data: [DONE]\n\n")
+
+    events = _events(output)
+    event_types = [event["type"] for event in events]
+    assert "response.output_item.added" in event_types
+    assert "response.function_call_arguments.delta" in event_types
+    assert "response.function_call_arguments.done" in event_types
+    completed = events[-1]["response"]
+    assert completed["output"][0]["type"] == "function_call"
+    assert completed["output"][0]["arguments"] == '{"q":"k"}'
 
 
 def test_canonicalizer_injects_output_item_added_before_function_delta() -> None:

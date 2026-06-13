@@ -5,6 +5,7 @@ from typing import Any
 from app.dataplane.fireworks.headers import build_upstream_headers
 from app.dataplane.fireworks.contracts import FIREWORKS_ANTHROPIC_MESSAGES_SUPPORTED_FIELDS
 from app.dataplane.fireworks.paths import resolve_inference_path
+from app.dataplane.fireworks.sampling_defaults import apply_model_sampling_defaults
 
 from .contracts import ANTHROPIC_MESSAGES_PUBLIC_FIELDS
 from .errors import anthropic_error
@@ -159,7 +160,7 @@ def validate_messages_body(body: dict[str, Any]) -> None:
         top_p = body.get("top_p")
         if not isinstance(top_p, (int, float)) or isinstance(top_p, bool) or not 0 <= float(top_p) <= 1:
             raise anthropic_error("'top_p' must be between 0 and 1", param="top_p", code="invalid_request_error")
-    if "top_k" in body:
+    if "top_k" in body and body.get("top_k") is not None:
         top_k = body.get("top_k")
         if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k < 0:
             raise anthropic_error("'top_k' must be a non-negative integer", param="top_k", code="invalid_request_error")
@@ -222,7 +223,7 @@ def validate_messages_body(body: dict[str, Any]) -> None:
                 raise anthropic_error("'thinking.budget_tokens' must be less than 'max_tokens'", param="thinking", code="invalid_request_error")
 
 
-def build_messages_adapter(context) -> tuple[dict[str, Any], dict[str, str]]:
+def build_messages_adapter(context) -> tuple[dict[str, Any], dict[str, str], dict[str, Any]]:
     body = context.body
     validate_messages_body(body)
     payload = {k: v for k, v in body.items() if k in FIREWORKS_ANTHROPIC_MESSAGES_SUPPORTED_FIELDS}
@@ -234,7 +235,13 @@ def build_messages_adapter(context) -> tuple[dict[str, Any], dict[str, str]]:
             payload.pop("service_tier", None)
     else:
         payload.pop("service_tier", None)
-    payload["model"] = context.resolved_model.upstream_model
+    field_changes: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    upstream_model = context.resolved_model.upstream_model
+    payload["model"] = upstream_model
+    sampling_changes, sampling_warnings = apply_model_sampling_defaults(payload, upstream_model)
+    field_changes.extend(sampling_changes)
+    warnings.extend(sampling_warnings)
     headers = build_upstream_headers(
         {k: v for k, v in getattr(context, "request_headers", {}).items() if k.lower() != "anthropic-beta"},
         stable_key=getattr(context, "stable_key", ""),
@@ -243,4 +250,4 @@ def build_messages_adapter(context) -> tuple[dict[str, Any], dict[str, str]]:
     upstream_base_url = getattr(getattr(context, "settings", None), "upstream_base_url", None)
     if upstream_base_url:
         headers["x-fireworks-upstream-path"] = resolve_inference_path(upstream_base_url, "anthropic_messages")
-    return payload, headers
+    return payload, headers, {"field_changes": field_changes, "warnings": warnings}
