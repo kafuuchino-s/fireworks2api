@@ -190,6 +190,7 @@ async def _handle_responses(request: Request):
             lambda: ResponsesSSECanonicalizer(
                 suppress_reasoning=suppress_reasoning,
                 sub2api_bridge_compat=bridge_compat,
+                upstream_model=upstream_model,
             )
         )
     elif bridge_compat:

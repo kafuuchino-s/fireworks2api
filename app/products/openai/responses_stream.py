@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 
@@ -247,6 +248,17 @@ class ChatCompletionsToResponsesSSE:
         out = self._ensure_created()
         out.extend(self._close_reasoning())
         text = "".join(self._text_parts)
+        if self._usage.get("completion_tokens") is None:
+            try:
+                from app.dataplane.usage_estimator import estimate_output_tokens_from_text
+                estimated_output = estimate_output_tokens_from_text(
+                    "".join(self._text_parts + self._reasoning_parts + [tool_call["arguments"] for tool_call in self._tool_calls.values()]),
+                    self._upstream_model,
+                )
+                if estimated_output:
+                    self._usage["completion_tokens"] = estimated_output
+            except Exception:
+                pass
         if self._message_started:
             if not self._sub2api_bridge_compat:
                 out.append(
@@ -537,20 +549,35 @@ class ChatCompletionsToResponsesSSE:
             response["perf_metrics_in_response"] = self._perf_metrics_in_response
         return response
 
-    def _responses_usage(self) -> dict[str, Any]:
+    def _responses_usage(self, *, fallback_output_tokens: int | None = None) -> dict[str, Any]:
         usage = self._usage
         input_details = usage.get("prompt_tokens_details") if isinstance(usage.get("prompt_tokens_details"), dict) else {}
         output_details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
-        response_usage = {
-            "input_tokens": usage.get("prompt_tokens"),
-            "output_tokens": usage.get("completion_tokens"),
-            "total_tokens": usage.get("total_tokens"),
+        output_tokens = usage.get("completion_tokens")
+        if output_tokens is None and fallback_output_tokens:
+            output_tokens = fallback_output_tokens
+        input_tokens = usage.get("prompt_tokens")
+        total_tokens = usage.get("total_tokens")
+        if total_tokens is None and input_tokens is not None and output_tokens is not None:
+            total_tokens = input_tokens + output_tokens
+        response_usage: dict[str, Any] = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
         }
         if input_details:
             response_usage["input_tokens_details"] = input_details
         if output_details:
             response_usage["output_tokens_details"] = output_details
         return response_usage
+
+    def estimated_output_tokens(self, estimator: Callable[[str], int]) -> int:
+        """Return an output-token estimate from generated text when upstream omits usage."""
+        text = "".join(self._text_parts)
+        reasoning = "".join(self._reasoning_parts)
+        tool_arguments = "".join(tool_call["arguments"] for tool_call in self._tool_calls.values())
+        total = estimator(text) + estimator(reasoning) + estimator(tool_arguments)
+        return max(0, total)
 
     @staticmethod
     def _json_event(event_type: str, payload: dict[str, Any]) -> str:
@@ -567,7 +594,7 @@ class ResponsesSSECanonicalizer:
     content_block_start before content_block_delta.
     """
 
-    def __init__(self, *, suppress_reasoning: bool = False, sub2api_bridge_compat: bool = False) -> None:
+    def __init__(self, *, suppress_reasoning: bool = False, sub2api_bridge_compat: bool = False, upstream_model: str | None = None) -> None:
         self._buffer = ""
         self._started_indexes: set[int] = set()
         self._closed_indexes: set[int] = set()
@@ -577,8 +604,12 @@ class ResponsesSSECanonicalizer:
         self._buffered_function_args: dict[int, str] = {}
         self._function_names: dict[int, str] = {}
         self._reasoning_indexes: set[int] = set()
+        self._text_parts: list[str] = []
+        self._reasoning_parts: list[str] = []
+        self._function_arguments: list[str] = []
         self._suppress_reasoning = suppress_reasoning
         self._sub2api_bridge_compat = sub2api_bridge_compat or suppress_reasoning
+        self._upstream_model = upstream_model
 
     def feed(self, chunk: bytes) -> bytes:
         self._buffer += chunk.decode("utf-8", errors="ignore").replace("\r\n", "\n")
@@ -693,9 +724,55 @@ class ResponsesSSECanonicalizer:
                     self._reasoning_indexes.add(output_index)
         elif event_type == "response.output_item.done" and isinstance(output_index, int):
             self._closed_indexes.add(output_index)
+        elif event_type == "response.output_text.delta":
+            delta = payload.get("delta")
+            if isinstance(delta, str):
+                self._text_parts.append(delta)
+        elif event_type == "response.reasoning_summary_text.delta":
+            delta = payload.get("delta")
+            if isinstance(delta, str):
+                self._reasoning_parts.append(delta)
+        elif event_type == "response.function_call_arguments.delta":
+            delta = payload.get("delta")
+            if isinstance(delta, str):
+                self._function_arguments.append(delta)
+
+        if event_type == "response.completed" and self._upstream_model:
+            payload = self._inject_usage(payload)
 
         synthetic.append(self._format_json_event(event_type, payload))
         return synthetic
+
+    def _inject_usage(self, payload: dict[str, Any]) -> dict[str, Any]:
+        response = payload.get("response")
+        if not isinstance(response, dict):
+            return payload
+        usage = response.get("usage")
+        if isinstance(usage, dict) and usage.get("output_tokens") not in (None, 0, ""):
+            return payload
+        if not isinstance(usage, dict):
+            usage = {}
+        try:
+            from app.dataplane.usage_estimator import estimate_output_tokens_from_text
+            estimated_output = estimate_output_tokens_from_text(
+                "".join(self._text_parts + self._reasoning_parts + self._function_arguments),
+                self._upstream_model,
+            )
+        except Exception:
+            estimated_output = 0
+        if not estimated_output:
+            return payload
+        updated_usage = dict(usage)
+        updated_usage["output_tokens"] = estimated_output
+        if isinstance(updated_usage.get("input_tokens"), int) and isinstance(updated_usage.get("total_tokens"), int):
+            updated_usage["total_tokens"] = max(updated_usage["total_tokens"], updated_usage["input_tokens"] + estimated_output)
+        elif isinstance(updated_usage.get("input_tokens"), int):
+            updated_usage["total_tokens"] = updated_usage["input_tokens"] + estimated_output
+        updated_response = dict(response)
+        updated_response["usage"] = updated_usage
+        updated_payload = dict(payload)
+        updated_payload["response"] = updated_response
+        return updated_payload
 
     def _correct_tool_payload(self, event_type: str | None, payload: dict[str, Any]) -> dict[str, Any]:
         item = payload.get("item")
@@ -793,6 +870,14 @@ class ResponsesSSECanonicalizer:
     def _format_json_event(self, event_type: str | None, payload: dict[str, Any]) -> str:
         event = event_type or (payload.get("type") if isinstance(payload.get("type"), str) else None)
         return self._format_event(event, json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+
+    def estimated_output_tokens(self, estimator: Callable[[str], int]) -> int:
+        """Return an output-token estimate from generated text when upstream omits usage."""
+        text = "".join(self._text_parts)
+        reasoning = "".join(self._reasoning_parts)
+        tool_arguments = "".join(self._function_arguments)
+        total = estimator(text) + estimator(reasoning) + estimator(tool_arguments)
+        return max(0, total)
 
     @staticmethod
     def _format_event(event_name: str | None, data: str) -> str:

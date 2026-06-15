@@ -8,7 +8,14 @@ import httpx
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from app.dataplane.usage import UsageStats, extract_usage, extract_usage_from_headers, maybe_estimate_usage, merge_usage
+from app.dataplane.usage import (
+    UsageStats,
+    extract_usage,
+    extract_usage_from_headers,
+    maybe_estimate_usage,
+    merge_usage,
+)
+from app.dataplane.usage_estimator import estimate_output_tokens_from_text
 from app.dataplane.fireworks.client import FireworksClient
 from app.dataplane.fireworks.stream_proxy import StreamUsageCollector, build_passthrough_response, build_passthrough_stream_response
 from app.dataplane.routing.failover import AppliedFailure, apply_failure_to_candidate, apply_failure_to_key, classify_upstream_failure
@@ -80,6 +87,16 @@ def _record_transform_debug_if_enabled(
     completed = dict(route_trace)
     completed["result"] = _route_result_with_routing(context, result, routing_events or [], blocked_account_ids)
     context.repository.record_transform_debug({"route_trace": completed}, getattr(context.settings, "transform_debug_retention", 0) or 0)
+
+
+def _estimate_stream_output(stream_transform: Any, upstream_model: str | None) -> int:
+    estimator = lambda text: estimate_output_tokens_from_text(text, upstream_model)
+    if hasattr(stream_transform, "estimated_output_tokens"):
+        try:
+            return int(stream_transform.estimated_output_tokens(estimator))
+        except Exception:
+            return 0
+    return 0
 
 
 def _route_trace_result(*, request_log_id: str | None, status_code: int, error_type: str | None, latency_ms: int | None, upstream_request_id: str | None, selected_key, usage: UsageStats) -> dict[str, Any]:
@@ -224,6 +241,16 @@ async def proxy_fireworks_request(
                         log_collector.usage = maybe_estimate_usage(
                             log_collector.usage, payload, None, upstream_model=context.resolved_model.upstream_model
                         )
+                    elif log_collector.usage.output_tokens == 0 and stream_transform is not None:
+                        estimated_output = _estimate_stream_output(stream_transform, context.resolved_model.upstream_model)
+                        if estimated_output:
+                            log_collector.usage = UsageStats(
+                                input_tokens=log_collector.usage.input_tokens,
+                                output_tokens=estimated_output,
+                                cached_tokens=log_collector.usage.cached_tokens,
+                                raw_usage=log_collector.usage.raw_usage,
+                                estimated=True,
+                            )
                     if endpoint == "responses" and bind_response_key_route and log_collector.response_id:
                         context.repository.upsert_response_key_route(log_collector.response_id, key)
                     if log_collector.response_id and response_id_callback is not None:
