@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 from fastapi.responses import JSONResponse, Response, StreamingResponse

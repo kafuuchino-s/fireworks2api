@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException, Request, status
-from fastapi.responses import JSONResponse
 from types import SimpleNamespace
 
 from app.control.model_resolver import ModelResolutionError, ResolvedModel, resolve_model
@@ -19,7 +18,7 @@ from app.dataplane.routing.affinity import (
 from app.dataplane.routing.sticky_router import select_candidate_keys
 from app.platform.auth import require_proxy_auth
 from app.platform.config import Settings
-from app.products.openai.errors import OpenAIRequestError, openai_error_response
+from app.products.openai.errors import OpenAIRequestError
 
 
 def _openai_http_error(message: str, status_code: int = 400) -> HTTPException:

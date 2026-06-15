@@ -14,8 +14,6 @@ from app.platform.storage.db import init_db
 import app.platform.auth as auth
 
 
-client = TestClient(app)
-
 
 def _require_auth(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(auth, "get_settings", lambda: SimpleNamespace(proxy_api_keys=["token"], admin_token="token"))

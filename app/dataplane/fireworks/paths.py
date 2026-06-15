@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
-from app.dataplane.fireworks.contracts import FIREWORKS_INFERENCE_PATHS
 
 
 _CANONICAL_INFERENCE_PATHS = {

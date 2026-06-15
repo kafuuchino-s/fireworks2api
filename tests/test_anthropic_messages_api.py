@@ -523,7 +523,6 @@ def test_anthropic_messages_adapter_supports_url_image_blocks(monkeypatch: Monke
             "model": "kimi-k2.6",
             "messages": [{"role": "user", "content": [{"type": "image", "source": {"type": "url", "url": "https://example.com/image.png"}}]}],
             "max_tokens": 1,
-            "max_tokens": 1,
         },
     )
     assert response.status_code == 200
@@ -538,7 +537,6 @@ def test_anthropic_messages_adapter_rejects_malformed_url_image_block(monkeypatc
             "model": "kimi-k2.6",
             "messages": [{"role": "user", "content": [{"type": "image", "source": {"type": "url", "url": "http://example.com/image.png"}}]}],
             "max_tokens": 1,
-            "max_tokens": 1,
         },
     )
     assert response.status_code == 400
@@ -552,7 +550,6 @@ def test_anthropic_messages_adapter_rejects_empty_base64_image_data(monkeypatch:
         json={
             "model": "kimi-k2.6",
             "messages": [{"role": "user", "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": ""}}]}],
-            "max_tokens": 1,
             "max_tokens": 1,
         },
     )

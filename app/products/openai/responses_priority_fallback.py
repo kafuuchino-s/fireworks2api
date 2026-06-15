@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from app.dataplane.fireworks.sampling_defaults import apply_model_sampling_defaults, needs_reasoning_top_k_default
-from app.products.openai.errors import OpenAIRequestError, raise_openai_error
+from app.products.openai.errors import raise_openai_error
 
 
 _SUPPORTED_TOP_LEVEL_FIELDS = {

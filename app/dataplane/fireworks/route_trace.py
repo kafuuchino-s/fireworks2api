@@ -185,7 +185,6 @@ def build_route_transform_trace(
     headers: Mapping[str, Any] | None = None,
     routing_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    body = getattr(context, "body", {}) or {}
     shape = request_shape or {}
     trace = {
         "public_route": public_route,

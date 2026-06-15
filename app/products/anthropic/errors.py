@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 

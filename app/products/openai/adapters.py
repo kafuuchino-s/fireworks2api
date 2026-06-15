@@ -3,3 +3,14 @@ from .fireworks_native.completions import build_completions_adapter
 from .fireworks_native.embeddings import build_embeddings_adapter
 from .fireworks_native.rerank import build_rerank_adapter
 from .fireworks_native.responses import build_responses_adapter, validate_responses_body
+
+
+__all__ = [
+    "build_chat_adapter",
+    "validate_chat_body",
+    "build_completions_adapter",
+    "build_embeddings_adapter",
+    "build_rerank_adapter",
+    "build_responses_adapter",
+    "validate_responses_body",
+]

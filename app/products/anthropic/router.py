@@ -14,7 +14,6 @@ from app.products.anthropic.adapters import build_messages_adapter, validate_mes
 from app.products.anthropic.responses_bridge import ResponsesToAnthropicStreamAdapter, build_responses_bridge_payload, trim_responses_input_to_latest_turn
 from app.products.anthropic.errors import anthropic_error_response
 from app.products.openai.proxy_common import (
-    build_proxy_context,
     build_proxy_context_from_body,
     ensure_proxy_auth,
     proxy_fireworks_request,
@@ -75,7 +74,7 @@ async def _handle_messages(request: Request):
     await ensure_proxy_auth(request)
     try:
         body = await request.json()
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         return anthropic_error_response("invalid JSON body", code="invalid_request")
     if not isinstance(body, dict):
         return anthropic_error_response("JSON body must be an object", code="invalid_request")

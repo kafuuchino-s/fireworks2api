@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 from fastapi import APIRouter, HTTPException, Request, status
 
-from app.control.repository import AppRepository, KeyRecord
+from app.control.repository import AppRepository
 from app.dataplane.fireworks.client import FireworksClient
 from app.dataplane.fireworks.management import FireworksManagementClient
 from app.platform.redaction import fingerprint_secret
@@ -170,7 +170,7 @@ async def _probe_fireworks_key(settings, api_key: str) -> tuple[dict[str, object
     try:
         async with FireworksManagementClient(settings, api_key) as client:
             response = await client.get_json("/v1/accounts")
-    except (httpx.HTTPError, TimeoutError, RuntimeError) as exc:
+    except (httpx.HTTPError, TimeoutError, RuntimeError):
         try:
             async with FireworksClient(settings, api_key) as client:
                 response = await client.get_json("/models")

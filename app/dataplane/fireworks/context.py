@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
 from app.control.repository import AppRepository, KeyRecord

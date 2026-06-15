@@ -7,10 +7,7 @@ import httpx
 
 from app.control import fireworks_model_registry as _fireworks_model_registry
 from app.control.fireworks_model_registry import (
-    OFFICIAL_SERVERLESS_PRICING,
-    STANDARD_MODEL_ALIASES,
     build_official_model_catalog,
-    default_model_mapping_specs,
 )
 from app.control.repository import AppRepository
 from app.platform.config import Settings

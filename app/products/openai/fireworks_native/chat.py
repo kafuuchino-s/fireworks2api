@@ -6,7 +6,7 @@ from app.dataplane.fireworks.contracts import FIREWORKS_CHAT_SUPPORTED_FIELDS, O
 from app.dataplane.fireworks.reasoning_capabilities import classify_reasoning_model
 from app.dataplane.fireworks.sampling_defaults import apply_model_sampling_defaults
 from app.products.openai.contracts import OPENAI_NOT_CHAT
-from .common import CHAT_NESTED_FIELDS, CHAT_PUBLIC_FIELDS, _copy_allowed, _reject_unknown_or_unsupported, _validate_bool, _validate_float_range, _validate_int_range, _validate_list, _validate_object, _validate_object_or_string
+from .common import CHAT_NESTED_FIELDS, CHAT_PUBLIC_FIELDS, _copy_allowed, _reject_unknown_or_unsupported, _validate_bool, _validate_float_range, _validate_int_range, _validate_object
 from app.products.openai.errors import raise_openai_error
 from .common import build_adapter_headers
 

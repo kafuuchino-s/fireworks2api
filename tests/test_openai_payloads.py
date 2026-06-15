@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 from fastapi.responses import Response, StreamingResponse
@@ -19,9 +18,11 @@ from app.products.openai.contracts import (
     OPENAI_NOT_CHAT,
     OPENAI_RESPONSES_STANDARD_OPTIONAL,
 )
-from app.products.openai.proxy_common import build_chat_upstream_payload, build_responses_upstream_payload
-from app.products.openai.proxy_common import record_proxy_transform_debug
-from app.products.openai.fireworks_native.chat import build_chat_adapter
+from app.products.openai.proxy_common import (
+    build_chat_upstream_payload,
+    build_responses_upstream_payload,
+    record_proxy_transform_debug,
+)
 
 
 def _context(**overrides):

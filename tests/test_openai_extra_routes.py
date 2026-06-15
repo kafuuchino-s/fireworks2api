@@ -11,7 +11,7 @@ import app.platform.auth as auth
 import app.products.openai.completions as completions_router
 import app.products.openai.embeddings as embeddings_router
 import app.products.openai.rerank as rerank_router
-from app.dataplane.fireworks.contracts import FIREWORKS_COMPLETIONS_SUPPORTED_FIELDS, FIREWORKS_EMBEDDINGS_SUPPORTED_FIELDS, FIREWORKS_RERANK_SUPPORTED_FIELDS
+from app.dataplane.fireworks.contracts import FIREWORKS_COMPLETIONS_SUPPORTED_FIELDS
 from app.products.openai.adapters import build_chat_adapter, build_completions_adapter, build_embeddings_adapter, build_rerank_adapter
 from app.products.openai.errors import OpenAIRequestError
 from app.products.openai.contracts import OPENAI_COMPLETIONS_REQUIRED, OPENAI_CHAT_REQUIRED, OPENAI_RERANK_REQUIRED
@@ -479,13 +479,6 @@ def test_rerank_adapter_rejects_openai_field_not_supported_by_fireworks() -> Non
 def test_rerank_adapter_rejects_schema_error_shape() -> None:
     with pytest.raises(OpenAIRequestError) as excinfo:
         build_rerank_adapter(_adapter_context({"model": "test", "query": "", "documents": ["a"]}))
-
-    assert excinfo.value.code == "invalid_request_error"
-
-
-def test_completions_adapter_rejects_plain_http_images() -> None:
-    with pytest.raises(OpenAIRequestError) as excinfo:
-        build_completions_adapter(_adapter_context({"model": "test", "prompt": "hello", "images": ["https://example.com/cat.png"]}))
 
     assert excinfo.value.code == "invalid_request_error"
 

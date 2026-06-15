@@ -52,7 +52,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
 import base64
 from collections.abc import Iterator
 from typing import Any

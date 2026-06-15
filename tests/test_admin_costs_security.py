@@ -13,7 +13,6 @@ from app.platform.config import Settings
 from app.platform.runtime_config import ensure_affinity_hash_secret
 from app.platform.storage.db import init_db
 import app.platform.auth as auth
-from app.main import app
 
 
 client = TestClient(app)

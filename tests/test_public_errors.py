@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 

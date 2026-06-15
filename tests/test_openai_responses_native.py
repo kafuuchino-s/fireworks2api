@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from fastapi.responses import JSONResponse
 from app.products.openai.errors import OpenAIRequestError
 
 from app.main import app

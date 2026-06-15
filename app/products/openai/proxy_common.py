@@ -1,3 +1,6 @@
+from app.dataplane.fireworks.proxy import close_quietly, failover_on_error, proxy_fireworks_request, read_response_text, safe_upstream_request_id
+from app.dataplane.usage import UsageStats, extract_usage_from_headers, merge_usage
+
 from .context import (
     ProxyRequestContext,
     build_proxy_context,
@@ -10,14 +13,13 @@ from .context import (
     load_json_body,
 )
 from .logging import compute_cache_hit_ratio, prepare_log_payload
-from .transform_debug import build_transform_debug_summary, record_transform_debug
 from .payloads import (
     build_chat_upstream_headers,
     build_chat_upstream_payload,
     build_responses_upstream_headers,
     build_responses_upstream_payload,
 )
-from app.dataplane.fireworks.proxy import close_quietly, failover_on_error, proxy_fireworks_request, read_response_text, safe_upstream_request_id
+from .transform_debug import build_transform_debug_summary, record_transform_debug
 
 
 def drop_reasoning_effort_if_thinking(payload):
@@ -33,9 +35,6 @@ def parse_usage_from_response_data(data):
 
 def maybe_derive_cache_key(route_key: str, secret: str) -> str:
     return route_key
-
-
-from app.dataplane.usage import UsageStats, merge_usage, extract_usage_from_headers
 
 
 def record_request_log(context: ProxyRequestContext, *, endpoint: str, selected_key, stream: bool, service_tier: str | None, usage: UsageStats, latency_ms: int | None, status_code: int, error_type: str | None, upstream_request_id: str | None) -> str:
