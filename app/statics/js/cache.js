@@ -135,7 +135,7 @@ function statusBadge(status) {
 function renderRows(rows = []) {
   const tbody = document.getElementById('request-rows');
   document.getElementById('rows-badge').textContent = t('cache.rowsBadge', { count: rows.length });
-  if (!rows.length) { tbody.innerHTML = `<tr><td class="empty" colspan="10">${t('cache.noRows')}</td></tr>`; return; }
+  if (!rows.length) { tbody.innerHTML = `<tr><td class="empty" colspan="11">${t('cache.noRows')}</td></tr>`; return; }
   tbody.innerHTML = rows.map(r => `
     <tr>
       <td class="time-cell">${escapeHtml(fmtDate(r.timestamp))}</td>
@@ -148,6 +148,7 @@ function renderRows(rows = []) {
       <td>${statusBadge(r.status_code)}</td>
       <td class="error-text">${escapeHtml(r.error_type || '—')}</td>
       <td class="mono">${escapeHtml(r.upstream_request_id || '—')}</td>
+      <td>${r.estimated ? `<span class="badge badge-warn" title="${escapeHtml(t('cache.table.estimatedHint'))}">${escapeHtml(t('cache.table.estimated'))}</span>` : '<span class="badge badge-green">—</span>'}</td>
     </tr>`).join('');
 }
 

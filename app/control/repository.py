@@ -772,6 +772,7 @@ class AppRepository:
             "output_tokens": data.get("output_tokens", 0),
             "cached_tokens": data.get("cached_tokens", 0),
             "cache_hit_ratio": data.get("cache_hit_ratio", 0),
+            "estimated": int(bool(data.get("estimated"))),
             "latency_ms": data.get("latency_ms"),
             "status_code": data.get("status_code"),
             "error_type": data.get("error_type"),
@@ -798,6 +799,9 @@ class AppRepository:
                   input_tokens=input_tokens + ?,
                   output_tokens=output_tokens + ?,
                   cached_tokens=cached_tokens + ?,
+                  estimated_input_tokens=estimated_input_tokens + ?,
+                  estimated_output_tokens=estimated_output_tokens + ?,
+                  estimated_cached_tokens=estimated_cached_tokens + ?,
                   latency_ms_total=latency_ms_total + ?,
                   latency_ms_count=latency_ms_count + ?,
                   updated_at=?
@@ -808,6 +812,9 @@ class AppRepository:
                     int(data.get("input_tokens") or 0),
                     int(data.get("output_tokens") or 0),
                     int(data.get("cached_tokens") or 0),
+                    int(data.get("input_tokens") or 0) if data.get("estimated") else 0,
+                    int(data.get("output_tokens") or 0) if data.get("estimated") else 0,
+                    int(data.get("cached_tokens") or 0) if data.get("estimated") else 0,
                     int(latency_ms or 0) if latency_ms is not None else 0,
                     1 if latency_ms is not None else 0,
                     now_iso(),
@@ -834,6 +841,9 @@ class AppRepository:
                   input_tokens,
                   output_tokens,
                   cached_tokens,
+                  estimated_input_tokens,
+                  estimated_output_tokens,
+                  estimated_cached_tokens,
                   latency_ms_total,
                   latency_ms_count
                 FROM request_log_totals
@@ -847,6 +857,9 @@ class AppRepository:
                 "input_tokens": 0,
                 "output_tokens": 0,
                 "cached_tokens": 0,
+                "estimated_input_tokens": 0,
+                "estimated_output_tokens": 0,
+                "estimated_cached_tokens": 0,
                 "avg_latency_ms": 0,
             }
         latency_count = int(row["latency_ms_count"] or 0)
@@ -857,6 +870,9 @@ class AppRepository:
             "input_tokens": int(row["input_tokens"] or 0),
             "output_tokens": int(row["output_tokens"] or 0),
             "cached_tokens": int(row["cached_tokens"] or 0),
+            "estimated_input_tokens": int(row["estimated_input_tokens"] or 0),
+            "estimated_output_tokens": int(row["estimated_output_tokens"] or 0),
+            "estimated_cached_tokens": int(row["estimated_cached_tokens"] or 0),
             "avg_latency_ms": int(latency_total / latency_count) if latency_count else 0,
         }
 

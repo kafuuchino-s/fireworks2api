@@ -24,6 +24,7 @@ def prepare_log_payload(*, endpoint: str, context: ProxyRequestContext, selected
         "output_tokens": usage.output_tokens,
         "cached_tokens": usage.cached_tokens,
         "cache_hit_ratio": compute_cache_hit_ratio(usage),
+        "estimated": usage.estimated,
         "latency_ms": latency_ms,
         "status_code": status_code,
         "error_type": error_type,

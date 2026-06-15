@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 SCHEMA = """
@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
   output_tokens INTEGER DEFAULT 0,
   cached_tokens INTEGER DEFAULT 0,
   cache_hit_ratio REAL DEFAULT 0,
+  estimated INTEGER DEFAULT 0,
   latency_ms INTEGER,
   status_code INTEGER,
   error_type TEXT,
@@ -70,6 +71,9 @@ CREATE TABLE IF NOT EXISTS request_log_totals (
   input_tokens INTEGER NOT NULL DEFAULT 0,
   output_tokens INTEGER NOT NULL DEFAULT 0,
   cached_tokens INTEGER NOT NULL DEFAULT 0,
+  estimated_input_tokens INTEGER NOT NULL DEFAULT 0,
+  estimated_output_tokens INTEGER NOT NULL DEFAULT 0,
+  estimated_cached_tokens INTEGER NOT NULL DEFAULT 0,
   latency_ms_total INTEGER NOT NULL DEFAULT 0,
   latency_ms_count INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
@@ -328,6 +332,9 @@ def _seed_request_log_totals(conn: sqlite3.Connection) -> None:
           COALESCE(SUM(input_tokens), 0) AS input_tokens,
           COALESCE(SUM(output_tokens), 0) AS output_tokens,
           COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+          COALESCE(SUM(CASE WHEN estimated=1 THEN input_tokens ELSE 0 END), 0) AS estimated_input_tokens,
+          COALESCE(SUM(CASE WHEN estimated=1 THEN output_tokens ELSE 0 END), 0) AS estimated_output_tokens,
+          COALESCE(SUM(CASE WHEN estimated=1 THEN cached_tokens ELSE 0 END), 0) AS estimated_cached_tokens,
           COALESCE(SUM(CASE WHEN latency_ms IS NOT NULL THEN latency_ms ELSE 0 END), 0) AS latency_ms_total,
           SUM(CASE WHEN latency_ms IS NOT NULL THEN 1 ELSE 0 END) AS latency_ms_count
         FROM request_logs
@@ -337,9 +344,10 @@ def _seed_request_log_totals(conn: sqlite3.Connection) -> None:
         """
         INSERT INTO request_log_totals(
           id, request_count, error_count, input_tokens, output_tokens, cached_tokens,
+          estimated_input_tokens, estimated_output_tokens, estimated_cached_tokens,
           latency_ms_total, latency_ms_count, updated_at
         )
-        VALUES (1, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         """,
         (
             int(row["request_count"] or 0),
@@ -347,6 +355,9 @@ def _seed_request_log_totals(conn: sqlite3.Connection) -> None:
             int(row["input_tokens"] or 0),
             int(row["output_tokens"] or 0),
             int(row["cached_tokens"] or 0),
+            int(row["estimated_input_tokens"] or 0),
+            int(row["estimated_output_tokens"] or 0),
+            int(row["estimated_cached_tokens"] or 0),
             int(row["latency_ms_total"] or 0),
             int(row["latency_ms_count"] or 0),
         ),
@@ -359,6 +370,28 @@ def _normalize_account_id(value: str | None) -> str | None:
         normalized = normalized[len("accounts/") :]
     normalized = normalized.strip()
     return normalized or None
+
+
+def _migrate_request_logs_estimated(conn: sqlite3.Connection) -> None:
+    if "estimated" in _columns(conn, "request_logs"):
+        return
+    conn.execute("ALTER TABLE request_logs ADD COLUMN estimated INTEGER DEFAULT 0")
+
+
+def _migrate_request_log_totals_estimated(conn: sqlite3.Connection) -> None:
+    totals_columns = _columns(conn, "request_log_totals")
+    additions = [
+        ("estimated_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("estimated_output_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("estimated_cached_tokens", "INTEGER NOT NULL DEFAULT 0"),
+    ]
+    for column, definition in additions:
+        if column not in totals_columns:
+            conn.execute(f"ALTER TABLE request_log_totals ADD COLUMN {column} {definition}")
+    if "estimated" in totals_columns:
+        conn.execute("UPDATE request_log_totals SET estimated_input_tokens=0 WHERE estimated_input_tokens IS NULL")
+        conn.execute("UPDATE request_log_totals SET estimated_output_tokens=0 WHERE estimated_output_tokens IS NULL")
+        conn.execute("UPDATE request_log_totals SET estimated_cached_tokens=0 WHERE estimated_cached_tokens IS NULL")
 
 
 def _migrate_account_quota_snapshots(conn: sqlite3.Connection) -> None:
@@ -414,6 +447,8 @@ def init_db(db_path: Path) -> None:
         conn.executescript(SCHEMA)
         _migrate_model_mappings(conn)
         _migrate_transform_debug_logs(conn)
+        _migrate_request_logs_estimated(conn)
+        _migrate_request_log_totals_estimated(conn)
         _migrate_account_quota_snapshots(conn)
         _seed_request_log_totals(conn)
         conn.execute(

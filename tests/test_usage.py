@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.dataplane.usage import extract_usage, extract_usage_from_headers, merge_usage
+from app.dataplane.usage import UsageStats, extract_usage, extract_usage_from_headers, merge_usage
 
 
 def test_extract_usage_merges_body_and_perf_metrics() -> None:
@@ -43,6 +43,16 @@ def test_merge_usage_keeps_maximum_values() -> None:
 
     assert merged.input_tokens == 12
     assert merged.cached_tokens == 4
+
+
+def test_merge_usage_flags_estimated_if_any_part_is_estimated() -> None:
+    upstream = extract_usage({"usage": {"input_tokens": 10, "output_tokens": 3}})
+    estimated = UsageStats(input_tokens=5, output_tokens=1, estimated=True)
+    merged = merge_usage(upstream, estimated)
+
+    assert merged.estimated is True
+    assert merged.input_tokens == 10
+    assert merged.output_tokens == 3
 
 
 def test_extract_usage_supports_anthropic_cached_tokens_shape() -> None:

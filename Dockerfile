@@ -15,10 +15,15 @@ RUN apt-get update \
 
 COPY pyproject.toml README.md ./
 COPY app ./app
+COPY scripts ./scripts
 COPY data/.gitkeep ./data/.gitkeep
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[tokenizer]"
+
+# Pre-download HuggingFace tokenizers so the image does not need to call HF Hub
+# at runtime.
+RUN python scripts/predownload_tokenizers.py
 
 RUN useradd --uid 1000 --create-home --shell /bin/sh appuser \
     && chown -R appuser:appuser /app \

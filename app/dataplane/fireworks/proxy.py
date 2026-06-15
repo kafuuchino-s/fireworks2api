@@ -8,8 +8,7 @@ import httpx
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from app.control.repository import KeyRecord
-from app.dataplane.usage import UsageStats, extract_usage, extract_usage_from_headers, merge_usage
+from app.dataplane.usage import UsageStats, extract_usage, extract_usage_from_headers, maybe_estimate_usage, merge_usage
 from app.dataplane.fireworks.client import FireworksClient
 from app.dataplane.fireworks.stream_proxy import StreamUsageCollector, build_passthrough_response, build_passthrough_stream_response
 from app.dataplane.routing.failover import AppliedFailure, apply_failure_to_candidate, apply_failure_to_key, classify_upstream_failure
@@ -95,6 +94,7 @@ def _route_trace_result(*, request_log_id: str | None, status_code: int, error_t
             "input_tokens": usage.input_tokens,
             "output_tokens": usage.output_tokens,
             "cached_tokens": usage.cached_tokens,
+            "estimated": usage.estimated,
         },
     }
 
@@ -215,10 +215,15 @@ async def proxy_fireworks_request(
                     first_chunk = await iterator.__anext__()
                 except StopAsyncIteration:
                     first_chunk = b""
-                collector = StreamUsageCollector(); collector.upstream_request_id = safe_upstream_request_id(response.headers)
+                collector = StreamUsageCollector()
+                collector.upstream_request_id = safe_upstream_request_id(response.headers)
                 stream_transform = stream_transform_factory() if stream_transform_factory is not None else None
                 async def finalize_stream(log_collector: StreamUsageCollector, error_type: str | None) -> None:
                     log_collector.merge_headers(response.headers)
+                    if not log_collector.usage.input_tokens and not log_collector.usage.output_tokens:
+                        log_collector.usage = maybe_estimate_usage(
+                            log_collector.usage, payload, None, upstream_model=context.resolved_model.upstream_model
+                        )
                     if endpoint == "responses" and bind_response_key_route and log_collector.response_id:
                         context.repository.upsert_response_key_route(log_collector.response_id, key)
                     if log_collector.response_id and response_id_callback is not None:
@@ -241,7 +246,12 @@ async def proxy_fireworks_request(
             last_key = key
             if 200 <= response.status_code < 300:
                 body_text = await read_response_text(response)
-                usage = _merge_request_usage(response, extract_usage(body_text))
+                upstream_usage = _merge_request_usage(response, extract_usage(body_text))
+                try:
+                    parsed_body = json.loads(body_text)
+                except json.JSONDecodeError:
+                    parsed_body = None
+                usage = maybe_estimate_usage(upstream_usage, payload, parsed_body, upstream_model=context.resolved_model.upstream_model)
                 if endpoint == "responses" and bind_response_key_route:
                     response_id = _response_id_from_body(body_text)
                     if response_id:
@@ -253,7 +263,7 @@ async def proxy_fireworks_request(
                 _record_transform_debug_if_enabled(context, route_trace, _route_trace_result(request_log_id=request_log_id, status_code=response.status_code, error_type=None, latency_ms=latency_ms, upstream_request_id=safe_upstream_request_id(response.headers), selected_key=key, usage=usage), routing_events=routing_events, blocked_account_ids=blocked_account_ids)
                 if response_transform is not None:
                     try:
-                        transformed = response_transform(json.loads(body_text))
+                        transformed = response_transform(parsed_body if parsed_body is not None else json.loads(body_text))
                     except json.JSONDecodeError:
                         return build_passthrough_response(response)
                     return JSONResponse(status_code=response.status_code, content=transformed)
@@ -266,7 +276,12 @@ async def proxy_fireworks_request(
                 if 200 <= response.status_code < 300:
                     payload = retry_payload
                     body_text = await read_response_text(response)
-                    usage = _merge_request_usage(response, extract_usage(body_text))
+                    upstream_usage = _merge_request_usage(response, extract_usage(body_text))
+                    try:
+                        parsed_body = json.loads(body_text)
+                    except json.JSONDecodeError:
+                        parsed_body = None
+                    usage = maybe_estimate_usage(upstream_usage, payload, parsed_body, upstream_model=context.resolved_model.upstream_model)
                     if endpoint == "responses" and bind_response_key_route:
                         response_id = _response_id_from_body(body_text)
                         if response_id:
@@ -278,7 +293,7 @@ async def proxy_fireworks_request(
                     _record_transform_debug_if_enabled(context, route_trace, _route_trace_result(request_log_id=request_log_id, status_code=response.status_code, error_type=None, latency_ms=latency_ms, upstream_request_id=safe_upstream_request_id(response.headers), selected_key=key, usage=usage), routing_events=routing_events, blocked_account_ids=blocked_account_ids)
                     if response_transform is not None:
                         try:
-                            transformed = response_transform(json.loads(body_text))
+                            transformed = response_transform(parsed_body if parsed_body is not None else json.loads(body_text))
                         except json.JSONDecodeError:
                             return build_passthrough_response(response)
                         return JSONResponse(status_code=response.status_code, content=transformed)
@@ -289,7 +304,8 @@ async def proxy_fireworks_request(
             if applied.scope == "account" and applied.account_id:
                 blocked_account_ids.add(applied.account_id)
             routing_events.append(_routing_event(key, account_id, action="failover", error_type=applied.error_type, scope=applied.scope))
-            if applied.retryable and index + 1 < len(context.selected_keys): continue
+            if applied.retryable and index + 1 < len(context.selected_keys):
+                continue
             if applied.retryable:
                 latency_ms = int((time.perf_counter() - started_at) * 1000)
                 request_log_id = context.repository.insert_request_log(prepare_log_payload(endpoint=endpoint, context=context, selected_key=key, stream=False, service_tier=service_tier, usage=UsageStats(), latency_ms=latency_ms, status_code=status.HTTP_503_SERVICE_UNAVAILABLE, error_type=applied.error_type, upstream_request_id=safe_upstream_request_id(response.headers)), context.settings.request_log_retention)
@@ -305,7 +321,8 @@ async def proxy_fireworks_request(
             if applied.scope == "account" and applied.account_id:
                 blocked_account_ids.add(applied.account_id)
             routing_events.append(_routing_event(key, account_id, action="failover", error_type=applied.error_type, scope=applied.scope))
-            if applied.retryable and index + 1 < len(context.selected_keys): continue
+            if applied.retryable and index + 1 < len(context.selected_keys):
+                continue
             if applied.retryable:
                 latency_ms = int((time.perf_counter() - started_at) * 1000)
                 request_log_id = context.repository.insert_request_log(prepare_log_payload(endpoint=endpoint, context=context, selected_key=key, stream=False, service_tier=service_tier, usage=UsageStats(), latency_ms=latency_ms, status_code=status.HTTP_503_SERVICE_UNAVAILABLE, error_type=applied.error_type, upstream_request_id=None), context.settings.request_log_retention)
