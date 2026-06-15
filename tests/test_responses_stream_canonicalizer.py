@@ -379,3 +379,32 @@ def test_chat_completions_converter_estimates_when_upstream_reports_zero_output_
     assert usage["output_tokens"] > 0
     assert usage["input_tokens"] > 0
     assert usage["estimated"] is True
+
+
+def test_canonicalizer_collects_text_from_done_events_under_bridge_compat() -> None:
+    """Upstream may only emit output_text.done / output_item.done without deltas.
+    Bridge compat drops these events, but usage estimation must still see the text.
+    """
+    canonicalizer = ResponsesSSECanonicalizer(
+        sub2api_bridge_compat=True,
+        upstream_model="accounts/fireworks/routers/kimi-k2p7-code-fast",
+        request_payload={"input": "hello"},
+    )
+
+    raw_chunks = [
+        b'event: response.created\ndata: {"id":"resp_1","object":"response","status":"in_progress"}\n\n',
+        b'event: response.output_text.done\ndata: {"output_index":0,"text":"hello world this is generated text"}\n\n',
+        b'event: response.output_item.done\ndata: {"output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello world this is generated text"}]}}\n\n',
+        b'event: response.completed\ndata: {"id":"resp_1","object":"response","status":"completed","usage":{"input_tokens":49513,"output_tokens":0,"total_tokens":49513}}\n\n',
+    ]
+
+    output = b"".join(canonicalizer.feed(chunk) for chunk in raw_chunks)
+    events = _events(output)
+    event_types = [event["type"] for event in events]
+    assert "response.output_text.done" not in event_types
+    assert "response.output_item.done" not in event_types
+    assert event_types[-1] == "response.completed"
+    completed = events[-1]
+    usage = completed["response"]["usage"]
+    assert usage["output_tokens"] > 0, f"expected non-zero output_tokens, got {usage}"
+    assert usage["estimated"] is True

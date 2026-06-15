@@ -69,8 +69,12 @@ def test_extract_usage_supports_responses_terminal_usage_shape() -> None:
     assert usage.cached_tokens == 5
 
 
-def test_maybe_estimate_usage_fills_zero_output_tokens_from_request_text() -> None:
-    """When output_tokens is zero and no response payload is available, estimate from request text."""
+def test_maybe_estimate_usage_does_not_estimate_output_from_request_text() -> None:
+    """When output_tokens is zero and no response payload is available, do not
+    fabricate output tokens from the request text. That fallback caused streaming
+    responses to report output equal to input, which is wrong for the admin log
+    and downstream clients.
+    """
     usage = maybe_estimate_usage(
         UsageStats(input_tokens=3, output_tokens=0, estimated=True),
         {"messages": [{"role": "user", "content": "hello world this is a test"}]},
@@ -78,16 +82,18 @@ def test_maybe_estimate_usage_fills_zero_output_tokens_from_request_text() -> No
         upstream_model="accounts/fireworks/routers/kimi-k2p7-code-fast",
     )
 
-    assert usage.output_tokens > 0
+    assert usage.output_tokens == 0
     assert usage.estimated is True
 
 
-def test_maybe_estimate_usage_fills_zero_output_tokens_for_responses_input() -> None:
-    """When output_tokens is zero for a responses-style request, estimate from input text."""
+def test_maybe_estimate_usage_fills_zero_output_tokens_from_response_payload() -> None:
+    """When output_tokens is zero but a response payload is available, estimate
+    output from the response text.
+    """
     usage = maybe_estimate_usage(
         UsageStats(input_tokens=3, output_tokens=0, estimated=True),
         {"input": "hello world this is a test"},
-        None,
+        {"output": [{"type": "message", "content": [{"type": "output_text", "text": "hello world this is generated text"}]}]},
         upstream_model="accounts/fireworks/routers/kimi-k2p7-code-fast",
     )
 

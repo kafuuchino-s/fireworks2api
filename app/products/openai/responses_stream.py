@@ -746,6 +746,27 @@ class ResponsesSSECanonicalizer:
             if self._sub2api_bridge_compat and self._is_unsafe_bridge_done_event(
                 event_type, payload, output_index
             ):
+                # Even though these events are dropped for bridge compatibility,
+                # they may carry the only copy of the generated text. Capture the
+                # text before dropping so usage estimation can still see the output.
+                if event_type == "response.output_text.done":
+                    text = payload.get("text")
+                    if isinstance(text, str) and text and not self._text_parts:
+                        self._text_parts.append(text)
+                elif event_type == "response.output_item.done":
+                    if not self._text_parts:
+                        item = payload.get("item")
+                        if isinstance(item, dict) and item.get("type") == "message":
+                            content = item.get("content")
+                            if isinstance(content, list):
+                                for part in content:
+                                    if isinstance(part, dict) and part.get("type") in {
+                                        "output_text",
+                                        "text",
+                                    }:
+                                        part_text = part.get("text")
+                                        if isinstance(part_text, str) and part_text:
+                                            self._text_parts.append(part_text)
                 return []
             if self._sub2api_bridge_compat and event_type == "response.output_item.added":
                 item = payload.get("item")
@@ -872,7 +893,7 @@ class ResponsesSSECanonicalizer:
             if isinstance(delta, str):
                 self._function_arguments.append(delta)
 
-        if event_type == "response.completed" and self._upstream_model:
+        if event_type in {"response.completed", "response.incomplete"} and self._upstream_model:
             payload = self._inject_usage(payload)
 
         synthetic.append(self._format_json_event(event_type, payload))
