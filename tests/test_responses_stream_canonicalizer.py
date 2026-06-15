@@ -306,3 +306,50 @@ def test_sub2api_facing_stream_corrects_bash_workdir_argument() -> None:
     events = _events(output)
     assert events[0]["item"]["name"] == "bash"
     assert json.loads(events[1]["arguments"]) == {"command": "pwd", "workdir": "/tmp"}
+
+
+def test_canonicalizer_injects_estimated_input_and_output_usage() -> None:
+    """When upstream omits usage, the canonicalizer should estimate both input and output."""
+    canonicalizer = ResponsesSSECanonicalizer(
+        upstream_model="accounts/fireworks/routers/kimi-k2p7-code-fast",
+        request_payload={"input": "hello"},
+    )
+
+    output = canonicalizer.feed(
+        b'event: response.output_text.delta\n'
+        b'data: {"output_index":0,"delta":"hello"}\n\n'
+    )
+    output += canonicalizer.feed(
+        b'event: response.completed\n'
+        b'data: {"id":"resp_1","object":"response","status":"completed"}\n\n'
+    )
+
+    events = _events(output)
+    completed = events[-1]
+    usage = completed["response"]["usage"]
+    assert usage["output_tokens"] > 0
+    assert usage["input_tokens"] > 0
+    assert usage["total_tokens"] >= usage["input_tokens"] + usage["output_tokens"]
+
+
+def test_chat_completions_converter_injects_estimated_input_and_output_usage() -> None:
+    """When upstream chat completion stream omits usage, estimate both for downstream."""
+    converter = ChatCompletionsToResponsesSSE(
+        model="kimi-k2.7-code-fast",
+        upstream_model="accounts/fireworks/routers/kimi-k2p7-code-fast",
+        sub2api_bridge_compat=True,
+        request_payload={"messages": [{"role": "user", "content": "hello"}]},
+    )
+
+    output = converter.feed(
+        b'data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hello"},"finish_reason":null}]}\n\n'
+    )
+    output += converter.feed(b"data: [DONE]\n\n")
+    output += converter.flush()
+
+    events = _events(output)
+    completed = events[-1]["response"]
+    usage = completed["usage"]
+    assert usage["output_tokens"] > 0
+    assert usage["input_tokens"] > 0
+    assert usage["total_tokens"] >= usage["input_tokens"] + usage["output_tokens"]

@@ -88,6 +88,25 @@ def _model_payload(model: ModelMapping) -> dict[str, Any]:
     }
 
 
+def _catalog_entry_for_upstream(catalog: Any, upstream_model: str) -> dict[str, Any] | None:
+    if not catalog:
+        return None
+    if isinstance(catalog, dict):
+        entry = catalog.get(upstream_model) if isinstance(catalog.get(upstream_model), dict) else None
+        if entry is not None:
+            return entry
+        items = catalog.get("items") or catalog.get("data") or catalog.get("models") or []
+        for candidate in items if isinstance(items, list) else []:
+            if isinstance(candidate, dict) and str(candidate.get("upstream_model") or candidate.get("id") or candidate.get("name") or "").strip() == upstream_model:
+                return candidate
+        return None
+    if isinstance(catalog, list):
+        for candidate in catalog:
+            if isinstance(candidate, dict) and str(candidate.get("upstream_model") or candidate.get("id") or candidate.get("name") or "").strip() == upstream_model:
+                return candidate
+    return None
+
+
 def _optional_model_metadata(request, upstream_model: str) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     official = get_official_model(upstream_model)
@@ -100,21 +119,7 @@ def _optional_model_metadata(request, upstream_model: str) -> dict[str, Any]:
         payload["pricing"] = official_pricing
     state = getattr(getattr(request, "app", None), "state", None)
     catalog = None if state is None else next((getattr(state, attr, None) for attr in ("fireworks_model_catalog", "fireworks_models_catalog", "fireworks_catalog") if getattr(state, attr, None)), None)
-    entry = None
-    if catalog:
-        if isinstance(catalog, dict):
-            entry = catalog.get(upstream_model) if isinstance(catalog.get(upstream_model), dict) else None
-            if entry is None:
-                items = catalog.get("items") or catalog.get("data") or catalog.get("models") or []
-                for candidate in items if isinstance(items, list) else []:
-                    if isinstance(candidate, dict) and str(candidate.get("upstream_model") or candidate.get("id") or candidate.get("name") or "").strip() == upstream_model:
-                        entry = candidate
-                        break
-        elif isinstance(catalog, list):
-            for candidate in catalog:
-                if isinstance(candidate, dict) and str(candidate.get("upstream_model") or candidate.get("id") or candidate.get("name") or "").strip() == upstream_model:
-                    entry = candidate
-                    break
+    entry = _catalog_entry_for_upstream(catalog, upstream_model)
     if entry:
         for field in ("kind", "supported_functionality", "pricing", "price"):
             value = entry.get(field)
@@ -122,7 +127,7 @@ def _optional_model_metadata(request, upstream_model: str) -> dict[str, Any]:
                 payload[field] = value
     if upstream_model.endswith("-fast") or upstream_model.endswith("-turbo"):
         base_upstream = upstream_model.removeprefix("accounts/fireworks/routers/")
-        base_upstream = base_upstream.removeprefix("accounts/fireworks/models/")
+        base_upstream = upstream_model.removeprefix("accounts/fireworks/models/")
         base_upstream = base_upstream.removesuffix("-fast").removesuffix("-turbo")
         base_model = f"accounts/fireworks/models/{base_upstream}"
         if not payload.get("kind") or not payload.get("supported_functionality"):
@@ -163,6 +168,7 @@ def _request_payload(item: dict[str, Any]) -> dict[str, Any]:
         "output_tokens": int(item.get("output_tokens") or 0),
         "cached_tokens": int(item.get("cached_tokens") or 0),
         "cache_hit_ratio": float(item.get("cache_hit_ratio") or 0),
+        "estimated": bool(item.get("estimated")),
         "latency_ms": item.get("latency_ms"),
         "status_code": item.get("status_code"),
         "error_type": item.get("error_type"),

@@ -132,6 +132,7 @@ async def _handle_responses(request: Request):
                     perf_metrics_in_response=body.get("perf_metrics_in_response") if isinstance(body.get("perf_metrics_in_response"), bool) else None,
                     service_tier=service_tier,
                     sub2api_bridge_compat=bridge_compat,
+                    request_payload=payload,
                 )
             )
             return await proxy_fireworks_request(context, **proxy_kwargs)
@@ -191,6 +192,7 @@ async def _handle_responses(request: Request):
                 suppress_reasoning=suppress_reasoning,
                 sub2api_bridge_compat=bridge_compat,
                 upstream_model=upstream_model,
+                request_payload=payload,
             )
         )
     elif bridge_compat:

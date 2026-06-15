@@ -62,6 +62,7 @@ class ChatCompletionsToResponsesSSE:
         perf_metrics_in_response: bool | None = None,
         service_tier: str | None = None,
         sub2api_bridge_compat: bool = False,
+        request_payload: dict[str, Any] | None = None,
     ) -> None:
         self._buffer = ""
         self._model = model
@@ -69,6 +70,7 @@ class ChatCompletionsToResponsesSSE:
         self._perf_metrics_in_response = perf_metrics_in_response
         self._service_tier = service_tier
         self._sub2api_bridge_compat = sub2api_bridge_compat
+        self._request_payload = request_payload
         self._chat_id = "chatcmpl_unknown"
         self._response_id = "resp_fallback_chatcmpl_unknown"
         self._message_id = "msg_fallback_chatcmpl_unknown"
@@ -557,6 +559,14 @@ class ChatCompletionsToResponsesSSE:
         if output_tokens is None and fallback_output_tokens:
             output_tokens = fallback_output_tokens
         input_tokens = usage.get("prompt_tokens")
+        if input_tokens is None and self._request_payload is not None:
+            try:
+                from app.dataplane.usage_estimator import estimate_input_tokens
+                estimated_input = estimate_input_tokens(self._request_payload, self._upstream_model)
+                if estimated_input:
+                    input_tokens = estimated_input
+            except Exception:
+                pass
         total_tokens = usage.get("total_tokens")
         if total_tokens is None and input_tokens is not None and output_tokens is not None:
             total_tokens = input_tokens + output_tokens
@@ -569,6 +579,10 @@ class ChatCompletionsToResponsesSSE:
             response_usage["input_tokens_details"] = input_details
         if output_details:
             response_usage["output_tokens_details"] = output_details
+        # Mark usage as estimated if any value was synthesized because the
+        # upstream chat completion stream did not carry that field.
+        if input_tokens is not None or output_tokens is not None:
+            response_usage["estimated"] = True
         return response_usage
 
     def estimated_output_tokens(self, estimator: Callable[[str], int]) -> int:
@@ -594,7 +608,7 @@ class ResponsesSSECanonicalizer:
     content_block_start before content_block_delta.
     """
 
-    def __init__(self, *, suppress_reasoning: bool = False, sub2api_bridge_compat: bool = False, upstream_model: str | None = None) -> None:
+    def __init__(self, *, suppress_reasoning: bool = False, sub2api_bridge_compat: bool = False, upstream_model: str | None = None, request_payload: dict[str, Any] | None = None) -> None:
         self._buffer = ""
         self._started_indexes: set[int] = set()
         self._closed_indexes: set[int] = set()
@@ -610,6 +624,7 @@ class ResponsesSSECanonicalizer:
         self._suppress_reasoning = suppress_reasoning
         self._sub2api_bridge_compat = sub2api_bridge_compat or suppress_reasoning
         self._upstream_model = upstream_model
+        self._request_payload = request_payload
 
     def feed(self, chunk: bytes) -> bytes:
         self._buffer += chunk.decode("utf-8", errors="ignore").replace("\r\n", "\n")
@@ -764,10 +779,19 @@ class ResponsesSSECanonicalizer:
             return payload
         updated_usage = dict(usage)
         updated_usage["output_tokens"] = estimated_output
+        if updated_usage.get("input_tokens") in (None, 0, "") and self._request_payload is not None:
+            try:
+                from app.dataplane.usage_estimator import estimate_input_tokens
+                estimated_input = estimate_input_tokens(self._request_payload, self._upstream_model)
+                if estimated_input:
+                    updated_usage["input_tokens"] = estimated_input
+            except Exception:
+                pass
         if isinstance(updated_usage.get("input_tokens"), int) and isinstance(updated_usage.get("total_tokens"), int):
             updated_usage["total_tokens"] = max(updated_usage["total_tokens"], updated_usage["input_tokens"] + estimated_output)
         elif isinstance(updated_usage.get("input_tokens"), int):
             updated_usage["total_tokens"] = updated_usage["input_tokens"] + estimated_output
+        updated_usage["estimated"] = True
         updated_response = dict(response)
         updated_response["usage"] = updated_usage
         updated_payload = dict(payload)

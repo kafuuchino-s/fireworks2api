@@ -66,6 +66,7 @@ def _usage_from_parts(*parts: Mapping[str, Any] | None) -> UsageStats:
     input_tokens = 0
     output_tokens = 0
     cached_tokens = 0
+    estimated = False
     raw_usage: dict[str, Any] | None = None
 
     for part in parts:
@@ -83,12 +84,14 @@ def _usage_from_parts(*parts: Mapping[str, Any] | None) -> UsageStats:
         input_tokens = max(input_tokens, current_input)
         output_tokens = max(output_tokens, current_output)
         cached_tokens = max(cached_tokens, current_cached)
+        estimated = estimated or bool(part.get("estimated"))
         raw_usage = dict(part) if raw_usage is None else raw_usage
 
     return UsageStats(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cached_tokens=cached_tokens,
+        estimated=estimated,
         raw_usage=raw_usage,
     )
 

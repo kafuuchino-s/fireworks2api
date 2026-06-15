@@ -90,7 +90,9 @@ def _record_transform_debug_if_enabled(
 
 
 def _estimate_stream_output(stream_transform: Any, upstream_model: str | None) -> int:
-    estimator = lambda text: estimate_output_tokens_from_text(text, upstream_model)
+    def estimator(text: str) -> int:
+        return estimate_output_tokens_from_text(text, upstream_model)
+
     if hasattr(stream_transform, "estimated_output_tokens"):
         try:
             return int(stream_transform.estimated_output_tokens(estimator))
@@ -237,11 +239,12 @@ async def proxy_fireworks_request(
                 stream_transform = stream_transform_factory() if stream_transform_factory is not None else None
                 async def finalize_stream(log_collector: StreamUsageCollector, error_type: str | None) -> None:
                     log_collector.merge_headers(response.headers)
-                    if not log_collector.usage.input_tokens and not log_collector.usage.output_tokens:
-                        log_collector.usage = maybe_estimate_usage(
-                            log_collector.usage, payload, None, upstream_model=context.resolved_model.upstream_model
-                        )
-                    elif log_collector.usage.output_tokens == 0 and stream_transform is not None:
+                    # Upstream streaming responses often omit either input or output
+                    # tokens. Estimate the missing fields so the admin log and
+                    # downstream clients see consistent numbers.
+                    missing_input = not log_collector.usage.input_tokens
+                    missing_output = not log_collector.usage.output_tokens
+                    if missing_output and stream_transform is not None:
                         estimated_output = _estimate_stream_output(stream_transform, context.resolved_model.upstream_model)
                         if estimated_output:
                             log_collector.usage = UsageStats(
@@ -251,6 +254,11 @@ async def proxy_fireworks_request(
                                 raw_usage=log_collector.usage.raw_usage,
                                 estimated=True,
                             )
+                            missing_output = False
+                    if missing_input or missing_output:
+                        log_collector.usage = maybe_estimate_usage(
+                            log_collector.usage, payload, None, upstream_model=context.resolved_model.upstream_model
+                        )
                     if endpoint == "responses" and bind_response_key_route and log_collector.response_id:
                         context.repository.upsert_response_key_route(log_collector.response_id, key)
                     if log_collector.response_id and response_id_callback is not None:
