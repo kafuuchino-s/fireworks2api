@@ -65,7 +65,11 @@ def _context(body: dict[str, object], upstream_model: str) -> SimpleNamespace:
         affinity_header="affinity",
         request_headers={"authorization": "Bearer token"},
         selected_keys=[SimpleNamespace(name="key-1", api_key="fw-test-key", fingerprint="fp-1")],
-        routing_metadata={"stable_key_source": "session", "stable_key_hash_value": "hash123", "affinity_header": "aff"},
+        routing_metadata={
+            "stable_key_source": "session",
+            "stable_key_hash_value": "hash123",
+            "affinity_header": "aff",
+        },
     )
 
 
@@ -91,6 +95,56 @@ def test_responses_native_estimates_usage_when_tokenizer_unavailable(
         status_code=200,
         headers={"content-type": "text/event-stream", "x-request-id": "req-1"},
         text=_NATIVE_RESPONSES_BODY,
+    )
+
+    async def fake_build_proxy_context(request, body):
+        return _context(body, upstream_model="accounts/fireworks/routers/kimi-k2p7-code-fast")
+
+    monkeypatch.setattr(responses_mod, "build_proxy_context_from_body", fake_build_proxy_context)
+
+    response = client_fixture.post(
+        "/v1/responses",
+        headers={"Authorization": "Bearer token"},
+        json={"model": "kimi-k2.7-code-fast", "input": "hello", "stream": True},
+    )
+    assert response.status_code == 200, response.text
+    assert route.called
+
+    completed_event = None
+    for line in response.text.strip().split("\n"):
+        if line.startswith("data:"):
+            payload = json.loads(line[5:].strip())
+            if payload.get("type") == "response.completed":
+                completed_event = payload
+
+    assert completed_event is not None
+    usage = completed_event["response"]["usage"]
+    assert usage["output_tokens"] > 0, f"expected non-zero output_tokens, got {usage}"
+    assert usage["input_tokens"] > 0
+    assert usage.get("estimated") is True
+
+
+_NATIVE_RESPONSES_BODY_TEXT_FIELD = "".join(
+    [
+        'event: response.created\ndata: {"id":"resp_1","object":"response","status":"in_progress","model":"kimi-k2.7-code-fast","output":[]}\n\n',
+        'event: response.output_text.delta\ndata: {"output_index":0,"text":"hello world this is generated text"}\n\n',
+        'event: response.output_item.done\ndata: {"output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello world this is generated text"}]}}\n\n',
+        'event: response.completed\ndata: {"id":"resp_1","object":"response","status":"completed","model":"kimi-k2.7-code-fast","output":[{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"hello world this is generated text"}]}],"usage":{"input_tokens":49513,"output_tokens":0,"total_tokens":49513}}\n\n',
+    ]
+)
+
+
+@respx.mock
+def test_responses_native_estimates_usage_when_fireworks_uses_text_field(
+    client_fixture: TestClient, monkeypatch: MonkeyPatch
+) -> None:
+    """Fireworks native Responses sometimes uses `text` instead of `delta` in
+    output_text.delta events. Ensure usage estimation still works.
+    """
+    route = respx.post("https://api.fireworks.ai/inference/v1/responses").respond(
+        status_code=200,
+        headers={"content-type": "text/event-stream", "x-request-id": "req-2"},
+        text=_NATIVE_RESPONSES_BODY_TEXT_FIELD,
     )
 
     async def fake_build_proxy_context(request, body):

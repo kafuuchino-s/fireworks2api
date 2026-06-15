@@ -50,7 +50,9 @@ def _strip_reasoning_from_response_object(response: dict[str, Any]) -> dict[str,
     output = response.get("output")
     if not isinstance(output, list):
         return response
-    stripped = [item for item in output if not (isinstance(item, dict) and item.get("type") == "reasoning")]
+    stripped = [
+        item for item in output if not (isinstance(item, dict) and item.get("type") == "reasoning")
+    ]
     if len(stripped) == len(output):
         return response
     updated = dict(response)
@@ -114,7 +116,9 @@ class ChatCompletionsToResponsesSSE:
         return "".join(out).encode("utf-8")
 
     def _convert_event(self, raw_event: str) -> list[str]:
-        data_lines = [line[5:].strip() for line in raw_event.split("\n") if line.startswith("data:")]
+        data_lines = [
+            line[5:].strip() for line in raw_event.split("\n") if line.startswith("data:")
+        ]
         if not data_lines:
             return []
         data = "\n".join(data_lines).strip()
@@ -204,11 +208,17 @@ class ChatCompletionsToResponsesSSE:
             "model": self._model,
             "output": [],
             "store": False,
-            "provider": {"name": "fireworks", "endpoint": "chat_completions", "upstream_model": self._upstream_model},
+            "provider": {
+                "name": "fireworks",
+                "endpoint": "chat_completions",
+                "upstream_model": self._upstream_model,
+            },
         }
         if self._service_tier is not None:
             response["service_tier"] = self._service_tier
-        return [self._json_event("response.created", {"type": "response.created", "response": response})]
+        return [
+            self._json_event("response.created", {"type": "response.created", "response": response})
+        ]
 
     def _ensure_text_started(self) -> list[str]:
         out = self._ensure_created()
@@ -258,8 +268,13 @@ class ChatCompletionsToResponsesSSE:
         if not self._usage.get("completion_tokens"):
             try:
                 from app.dataplane.usage_estimator import estimate_output_tokens_from_text
+
                 estimated_output = estimate_output_tokens_from_text(
-                    "".join(self._text_parts + self._reasoning_parts + [tool_call["arguments"] for tool_call in self._tool_calls.values()]),
+                    "".join(
+                        self._text_parts
+                        + self._reasoning_parts
+                        + [tool_call["arguments"] for tool_call in self._tool_calls.values()]
+                    ),
                     self._upstream_model,
                 )
                 if estimated_output:
@@ -313,7 +328,12 @@ class ChatCompletionsToResponsesSSE:
                 )
             )
         out.extend(self._close_tool_items())
-        out.append(self._json_event("response.completed", {"type": "response.completed", "response": self._completed_response(text)}))
+        out.append(
+            self._json_event(
+                "response.completed",
+                {"type": "response.completed", "response": self._completed_response(text)},
+            )
+        )
         return out
 
     def _alloc_output_index(self) -> int:
@@ -334,7 +354,11 @@ class ChatCompletionsToResponsesSSE:
                 {
                     "type": "response.output_item.added",
                     "output_index": self._reasoning_index,
-                    "item": {"id": self._reasoning_id, "type": "reasoning", "status": "in_progress"},
+                    "item": {
+                        "id": self._reasoning_id,
+                        "type": "reasoning",
+                        "status": "in_progress",
+                    },
                 },
             )
         )
@@ -408,10 +432,16 @@ class ChatCompletionsToResponsesSSE:
         out: list[str] = []
         if stored is None:
             item_id = f"fc_fallback_{index}_{self._chat_id}"
-            call_id = tool_call.get("id") if isinstance(tool_call.get("id"), str) and tool_call.get("id") else f"call_fallback_{index}"
+            call_id = (
+                tool_call.get("id")
+                if isinstance(tool_call.get("id"), str) and tool_call.get("id")
+                else f"call_fallback_{index}"
+            )
             name = function.get("name") if isinstance(function.get("name"), str) else ""
             # Correct tool name for sub2api compatibility (e.g. apply_patch -> edit)
-            corrected_name = _TOOL_NAME_MAP.get(name.strip(), name.strip()) if name.strip() else name
+            corrected_name = (
+                _TOOL_NAME_MAP.get(name.strip(), name.strip()) if name.strip() else name
+            )
             stored = {
                 "id": item_id,
                 "call_id": call_id,
@@ -441,7 +471,9 @@ class ChatCompletionsToResponsesSSE:
             if isinstance(tool_call.get("id"), str) and tool_call["id"]:
                 stored["call_id"] = tool_call["id"]
             if isinstance(function.get("name"), str) and function["name"]:
-                corrected_name = _TOOL_NAME_MAP.get(function["name"].strip(), function["name"].strip())
+                corrected_name = _TOOL_NAME_MAP.get(
+                    function["name"].strip(), function["name"].strip()
+                )
                 stored["name"] = corrected_name
 
         arguments_delta = function.get("arguments")
@@ -546,7 +578,11 @@ class ChatCompletionsToResponsesSSE:
             "output": output,
             "usage": self._responses_usage(),
             "store": False,
-            "provider": {"name": "fireworks", "endpoint": "chat_completions", "upstream_model": self._upstream_model},
+            "provider": {
+                "name": "fireworks",
+                "endpoint": "chat_completions",
+                "upstream_model": self._upstream_model,
+            },
         }
         if self._service_tier is not None:
             response["service_tier"] = self._service_tier
@@ -558,8 +594,16 @@ class ChatCompletionsToResponsesSSE:
 
     def _responses_usage(self, *, fallback_output_tokens: int | None = None) -> dict[str, Any]:
         usage = self._usage
-        input_details = usage.get("prompt_tokens_details") if isinstance(usage.get("prompt_tokens_details"), dict) else {}
-        output_details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
+        input_details = (
+            usage.get("prompt_tokens_details")
+            if isinstance(usage.get("prompt_tokens_details"), dict)
+            else {}
+        )
+        output_details = (
+            usage.get("completion_tokens_details")
+            if isinstance(usage.get("completion_tokens_details"), dict)
+            else {}
+        )
         output_tokens = usage.get("completion_tokens")
         if not output_tokens and fallback_output_tokens:
             output_tokens = fallback_output_tokens
@@ -567,13 +611,18 @@ class ChatCompletionsToResponsesSSE:
         if not input_tokens and self._request_payload is not None:
             try:
                 from app.dataplane.usage_estimator import estimate_input_tokens
+
                 estimated_input = estimate_input_tokens(self._request_payload, self._upstream_model)
                 if estimated_input:
                     input_tokens = estimated_input
             except Exception:
                 pass
         total_tokens = usage.get("total_tokens")
-        if total_tokens is None and isinstance(input_tokens, int) and isinstance(output_tokens, int):
+        if (
+            total_tokens is None
+            and isinstance(input_tokens, int)
+            and isinstance(output_tokens, int)
+        ):
             total_tokens = input_tokens + output_tokens
         response_usage: dict[str, Any] = {
             "input_tokens": input_tokens,
@@ -613,7 +662,14 @@ class ResponsesSSECanonicalizer:
     content_block_start before content_block_delta.
     """
 
-    def __init__(self, *, suppress_reasoning: bool = False, sub2api_bridge_compat: bool = False, upstream_model: str | None = None, request_payload: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        suppress_reasoning: bool = False,
+        sub2api_bridge_compat: bool = False,
+        upstream_model: str | None = None,
+        request_payload: dict[str, Any] | None = None,
+    ) -> None:
         self._buffer = ""
         self._started_indexes: set[int] = set()
         self._closed_indexes: set[int] = set()
@@ -687,7 +743,9 @@ class ResponsesSSECanonicalizer:
                     self._closed_indexes.add(output_index)
             return []
         if isinstance(output_index, int):
-            if self._sub2api_bridge_compat and self._is_unsafe_bridge_done_event(event_type, payload, output_index):
+            if self._sub2api_bridge_compat and self._is_unsafe_bridge_done_event(
+                event_type, payload, output_index
+            ):
                 return []
             if self._sub2api_bridge_compat and event_type == "response.output_item.added":
                 item = payload.get("item")
@@ -700,20 +758,39 @@ class ResponsesSSECanonicalizer:
                     self._started_indexes.add(output_index)
                     self._closed_indexes.discard(output_index)
                     return []
-            if self._sub2api_bridge_compat and event_type == "response.function_call_arguments.delta":
-                self._buffered_function_args[output_index] = self._buffered_function_args.get(output_index, "") + str(payload.get("delta") or "")
+            if (
+                self._sub2api_bridge_compat
+                and event_type == "response.function_call_arguments.delta"
+            ):
+                self._buffered_function_args[output_index] = self._buffered_function_args.get(
+                    output_index, ""
+                ) + str(payload.get("delta") or "")
                 return []
-            if event_type in {"response.function_call_arguments.delta", "response.function_call_arguments.done"}:
+            if event_type in {
+                "response.function_call_arguments.delta",
+                "response.function_call_arguments.done",
+            }:
                 if output_index in self._closed_indexes:
                     return []
                 if output_index not in self._started_indexes:
-                    synthetic.append(self._format_json_event("response.output_item.added", self._function_call_added_payload(payload)))
+                    synthetic.append(
+                        self._format_json_event(
+                            "response.output_item.added", self._function_call_added_payload(payload)
+                        )
+                    )
                     self._started_indexes.add(output_index)
-            elif event_type in {"response.reasoning_summary_text.delta", "response.reasoning_summary_text.done"}:
+            elif event_type in {
+                "response.reasoning_summary_text.delta",
+                "response.reasoning_summary_text.done",
+            }:
                 if output_index in self._closed_indexes:
                     return []
                 if output_index not in self._started_indexes:
-                    synthetic.append(self._format_json_event("response.output_item.added", self._reasoning_added_payload(payload)))
+                    synthetic.append(
+                        self._format_json_event(
+                            "response.output_item.added", self._reasoning_added_payload(payload)
+                        )
+                    )
                     self._started_indexes.add(output_index)
             if event_type == "response.function_call_arguments.done":
                 self._function_args_done_indexes.add(output_index)
@@ -724,15 +801,27 @@ class ResponsesSSECanonicalizer:
                     added_payload = self._buffered_function_added.pop(output_index)
                     args_done_payload = dict(payload)
                     args_done_payload["arguments"] = args
-                    args_done_payload = self._correct_function_arguments(output_index, args_done_payload)
+                    args_done_payload = self._correct_function_arguments(
+                        output_index, args_done_payload
+                    )
                     self._buffered_function_args.pop(output_index, None)
-                    synthetic.append(self._format_json_event("response.output_item.added", added_payload))
-                    synthetic.append(self._format_json_event("response.function_call_arguments.done", args_done_payload))
+                    synthetic.append(
+                        self._format_json_event("response.output_item.added", added_payload)
+                    )
+                    synthetic.append(
+                        self._format_json_event(
+                            "response.function_call_arguments.done", args_done_payload
+                        )
+                    )
                     return synthetic
 
         if event_type == "response.output_item.added":
             item = payload.get("item")
-            if isinstance(output_index, int) and isinstance(item, dict) and item.get("type") in {"function_call", "reasoning", "message"}:
+            if (
+                isinstance(output_index, int)
+                and isinstance(item, dict)
+                and item.get("type") in {"function_call", "reasoning", "message"}
+            ):
                 self._started_indexes.add(output_index)
                 self._closed_indexes.discard(output_index)
                 if item.get("type") == "function_call":
@@ -744,10 +833,36 @@ class ResponsesSSECanonicalizer:
                     self._reasoning_indexes.add(output_index)
         elif event_type == "response.output_item.done" and isinstance(output_index, int):
             self._closed_indexes.add(output_index)
+            # If we never collected text deltas, try to recover the final text
+            # from the completed message item. This handles upstreams that only
+            # emit the full text in the output_item.done event.
+            if not self._text_parts:
+                item = payload.get("item")
+                if isinstance(item, dict) and item.get("type") == "message":
+                    content = item.get("content")
+                    if isinstance(content, list):
+                        for part in content:
+                            if isinstance(part, dict) and part.get("type") in {
+                                "output_text",
+                                "text",
+                            }:
+                                text = part.get("text")
+                                if isinstance(text, str) and text:
+                                    self._text_parts.append(text)
         elif event_type == "response.output_text.delta":
             delta = payload.get("delta")
+            # Fireworks native responses sometimes uses the `text` field name
+            # instead of the standard `delta` field; accept both.
+            if not isinstance(delta, str):
+                delta = payload.get("text")
             if isinstance(delta, str):
                 self._text_parts.append(delta)
+        elif event_type == "response.output_text.done":
+            # Some upstreams emit the final text in the done event rather than
+            # as a sequence of deltas. Capture it as a fallback source.
+            text = payload.get("text")
+            if isinstance(text, str) and text and not self._text_parts:
+                self._text_parts.append(text)
         elif event_type == "response.reasoning_summary_text.delta":
             delta = payload.get("delta")
             if isinstance(delta, str):
@@ -779,6 +894,7 @@ class ResponsesSSECanonicalizer:
         # downstream client never sees zero output tokens.
         try:
             from app.dataplane.usage_estimator import estimate_output_tokens_from_text
+
             estimated_output = estimate_output_tokens_from_text(combined_text, self._upstream_model)
         except Exception:
             pass
@@ -791,6 +907,7 @@ class ResponsesSSECanonicalizer:
         if updated_usage.get("input_tokens") in (None, 0, "") and self._request_payload is not None:
             try:
                 from app.dataplane.usage_estimator import estimate_input_tokens
+
                 estimated_input = estimate_input_tokens(self._request_payload, self._upstream_model)
                 if estimated_input:
                     updated_usage["input_tokens"] = estimated_input
@@ -800,8 +917,12 @@ class ResponsesSSECanonicalizer:
             estimated_input = _estimate_input_tokens_from_payload(self._request_payload)
             if estimated_input:
                 updated_usage["input_tokens"] = estimated_input
-        if isinstance(updated_usage.get("input_tokens"), int) and isinstance(updated_usage.get("total_tokens"), int):
-            updated_usage["total_tokens"] = max(updated_usage["total_tokens"], updated_usage["input_tokens"] + estimated_output)
+        if isinstance(updated_usage.get("input_tokens"), int) and isinstance(
+            updated_usage.get("total_tokens"), int
+        ):
+            updated_usage["total_tokens"] = max(
+                updated_usage["total_tokens"], updated_usage["input_tokens"] + estimated_output
+            )
         elif isinstance(updated_usage.get("input_tokens"), int):
             updated_usage["total_tokens"] = updated_usage["input_tokens"] + estimated_output
         updated_usage["estimated"] = True
@@ -811,7 +932,9 @@ class ResponsesSSECanonicalizer:
         updated_payload["response"] = updated_response
         return updated_payload
 
-    def _correct_tool_payload(self, event_type: str | None, payload: dict[str, Any]) -> dict[str, Any]:
+    def _correct_tool_payload(
+        self, event_type: str | None, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         item = payload.get("item")
         if isinstance(item, dict) and item.get("type") == "function_call":
             corrected_item = self._correct_function_item(item)
@@ -834,9 +957,19 @@ class ResponsesSSECanonicalizer:
         corrected["name"] = corrected_name
         return corrected
 
-    def _correct_function_arguments(self, output_index: int, payload: dict[str, Any]) -> dict[str, Any]:
-        tool_name = payload.get("name") if isinstance(payload.get("name"), str) else self._function_names.get(output_index)
-        corrected_tool_name = _TOOL_NAME_MAP.get(tool_name.strip(), tool_name.strip()) if isinstance(tool_name, str) and tool_name.strip() else None
+    def _correct_function_arguments(
+        self, output_index: int, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        tool_name = (
+            payload.get("name")
+            if isinstance(payload.get("name"), str)
+            else self._function_names.get(output_index)
+        )
+        corrected_tool_name = (
+            _TOOL_NAME_MAP.get(tool_name.strip(), tool_name.strip())
+            if isinstance(tool_name, str) and tool_name.strip()
+            else None
+        )
         if not corrected_tool_name:
             return payload
         arguments = payload.get("arguments")
@@ -854,8 +987,14 @@ class ResponsesSSECanonicalizer:
         item = payload.get("item")
         return isinstance(item, dict) and item.get("type") == "reasoning"
 
-    def _is_unsafe_bridge_done_event(self, event_type: str | None, payload: dict[str, Any], output_index: int) -> bool:
-        if event_type in {"response.output_text.done", "response.content_part.added", "response.content_part.done"}:
+    def _is_unsafe_bridge_done_event(
+        self, event_type: str | None, payload: dict[str, Any], output_index: int
+    ) -> bool:
+        if event_type in {
+            "response.output_text.done",
+            "response.content_part.added",
+            "response.content_part.done",
+        }:
             return True
         if event_type != "response.output_item.done":
             return False
@@ -873,8 +1012,14 @@ class ResponsesSSECanonicalizer:
             return payload
         if "response" in payload:
             return payload
-        if payload.get("object") == "response" or (isinstance(payload.get("id"), str) and str(payload.get("id")).startswith("resp_")):
-            response = {key: value for key, value in payload.items() if key not in {"type", "sequence_number"}}
+        if payload.get("object") == "response" or (
+            isinstance(payload.get("id"), str) and str(payload.get("id")).startswith("resp_")
+        ):
+            response = {
+                key: value
+                for key, value in payload.items()
+                if key not in {"type", "sequence_number"}
+            }
             wrapped = {"type": event_type, "response": response}
             if "sequence_number" in payload:
                 wrapped["sequence_number"] = payload["sequence_number"]
@@ -884,20 +1029,40 @@ class ResponsesSSECanonicalizer:
     @staticmethod
     def _function_call_added_payload(payload: dict[str, Any]) -> dict[str, Any]:
         output_index = payload.get("output_index", 0)
-        item_id = payload.get("item_id") if isinstance(payload.get("item_id"), str) else f"fc_{output_index}"
-        call_id = payload.get("call_id") if isinstance(payload.get("call_id"), str) else str(item_id)
-        name = payload.get("name") if isinstance(payload.get("name"), str) and payload.get("name") else "tool"
+        item_id = (
+            payload.get("item_id")
+            if isinstance(payload.get("item_id"), str)
+            else f"fc_{output_index}"
+        )
+        call_id = (
+            payload.get("call_id") if isinstance(payload.get("call_id"), str) else str(item_id)
+        )
+        name = (
+            payload.get("name")
+            if isinstance(payload.get("name"), str) and payload.get("name")
+            else "tool"
+        )
         name = _TOOL_NAME_MAP.get(name, name)
         return {
             "type": "response.output_item.added",
             "output_index": output_index,
-            "item": {"type": "function_call", "id": item_id, "call_id": call_id, "name": name, "status": "in_progress"},
+            "item": {
+                "type": "function_call",
+                "id": item_id,
+                "call_id": call_id,
+                "name": name,
+                "status": "in_progress",
+            },
         }
 
     @staticmethod
     def _reasoning_added_payload(payload: dict[str, Any]) -> dict[str, Any]:
         output_index = payload.get("output_index", 0)
-        item_id = payload.get("item_id") if isinstance(payload.get("item_id"), str) else f"rs_{output_index}"
+        item_id = (
+            payload.get("item_id")
+            if isinstance(payload.get("item_id"), str)
+            else f"rs_{output_index}"
+        )
         return {
             "type": "response.output_item.added",
             "output_index": output_index,
@@ -905,8 +1070,12 @@ class ResponsesSSECanonicalizer:
         }
 
     def _format_json_event(self, event_type: str | None, payload: dict[str, Any]) -> str:
-        event = event_type or (payload.get("type") if isinstance(payload.get("type"), str) else None)
-        return self._format_event(event, json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        event = event_type or (
+            payload.get("type") if isinstance(payload.get("type"), str) else None
+        )
+        return self._format_event(
+            event, json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        )
 
     def estimated_output_tokens(self, estimator: Callable[[str], int]) -> int:
         """Return an output-token estimate from generated text when upstream omits usage."""
@@ -945,7 +1114,11 @@ def _correct_tool_arguments(arguments: Any, tool_name: str) -> Any:
                 parsed["filePath"] = parsed.pop(source)
                 changed = True
                 break
-        for source, target in (("old_string", "oldString"), ("new_string", "newString"), ("replace_all", "replaceAll")):
+        for source, target in (
+            ("old_string", "oldString"),
+            ("new_string", "newString"),
+            ("replace_all", "replaceAll"),
+        ):
             if source in parsed:
                 parsed[target] = parsed.pop(source)
                 changed = True
