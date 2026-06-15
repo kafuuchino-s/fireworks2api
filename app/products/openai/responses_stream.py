@@ -4,6 +4,11 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from app.dataplane.usage import (
+    _estimate_input_tokens_from_payload,
+    _estimate_output_tokens_from_text,
+)
+
 
 _TOOL_NAME_MAP = {
     "apply_patch": "edit",
@@ -767,14 +772,18 @@ class ResponsesSSECanonicalizer:
             return payload
         if not isinstance(usage, dict):
             usage = {}
+        combined_text = "".join(self._text_parts + self._reasoning_parts + self._function_arguments)
+        estimated_output = 0
+        # Try tokenizer-aware estimate first; if it fails (network/tokenizer
+        # unavailable) fall back to the simple text-length estimator so the
+        # downstream client never sees zero output tokens.
         try:
             from app.dataplane.usage_estimator import estimate_output_tokens_from_text
-            estimated_output = estimate_output_tokens_from_text(
-                "".join(self._text_parts + self._reasoning_parts + self._function_arguments),
-                self._upstream_model,
-            )
+            estimated_output = estimate_output_tokens_from_text(combined_text, self._upstream_model)
         except Exception:
-            estimated_output = 0
+            pass
+        if not estimated_output:
+            estimated_output = _estimate_output_tokens_from_text(combined_text)
         if not estimated_output:
             return payload
         updated_usage = dict(usage)
@@ -787,6 +796,10 @@ class ResponsesSSECanonicalizer:
                     updated_usage["input_tokens"] = estimated_input
             except Exception:
                 pass
+        if updated_usage.get("input_tokens") in (None, 0, "") and self._request_payload is not None:
+            estimated_input = _estimate_input_tokens_from_payload(self._request_payload)
+            if estimated_input:
+                updated_usage["input_tokens"] = estimated_input
         if isinstance(updated_usage.get("input_tokens"), int) and isinstance(updated_usage.get("total_tokens"), int):
             updated_usage["total_tokens"] = max(updated_usage["total_tokens"], updated_usage["input_tokens"] + estimated_output)
         elif isinstance(updated_usage.get("input_tokens"), int):
