@@ -250,7 +250,7 @@ class ChatCompletionsToResponsesSSE:
         out = self._ensure_created()
         out.extend(self._close_reasoning())
         text = "".join(self._text_parts)
-        if self._usage.get("completion_tokens") is None:
+        if not self._usage.get("completion_tokens"):
             try:
                 from app.dataplane.usage_estimator import estimate_output_tokens_from_text
                 estimated_output = estimate_output_tokens_from_text(
@@ -556,10 +556,10 @@ class ChatCompletionsToResponsesSSE:
         input_details = usage.get("prompt_tokens_details") if isinstance(usage.get("prompt_tokens_details"), dict) else {}
         output_details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
         output_tokens = usage.get("completion_tokens")
-        if output_tokens is None and fallback_output_tokens:
+        if not output_tokens and fallback_output_tokens:
             output_tokens = fallback_output_tokens
         input_tokens = usage.get("prompt_tokens")
-        if input_tokens is None and self._request_payload is not None:
+        if not input_tokens and self._request_payload is not None:
             try:
                 from app.dataplane.usage_estimator import estimate_input_tokens
                 estimated_input = estimate_input_tokens(self._request_payload, self._upstream_model)
@@ -568,7 +568,7 @@ class ChatCompletionsToResponsesSSE:
             except Exception:
                 pass
         total_tokens = usage.get("total_tokens")
-        if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        if total_tokens is None and isinstance(input_tokens, int) and isinstance(output_tokens, int):
             total_tokens = input_tokens + output_tokens
         response_usage: dict[str, Any] = {
             "input_tokens": input_tokens,

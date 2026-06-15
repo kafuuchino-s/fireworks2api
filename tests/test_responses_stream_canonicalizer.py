@@ -353,3 +353,29 @@ def test_chat_completions_converter_injects_estimated_input_and_output_usage() -
     assert usage["output_tokens"] > 0
     assert usage["input_tokens"] > 0
     assert usage["total_tokens"] >= usage["input_tokens"] + usage["output_tokens"]
+
+
+def test_chat_completions_converter_estimates_when_upstream_reports_zero_output_tokens() -> None:
+    """When upstream reports completion_tokens=0, we still estimate output tokens."""
+    converter = ChatCompletionsToResponsesSSE(
+        model="kimi-k2.7-code-fast",
+        upstream_model="accounts/fireworks/routers/kimi-k2p7-code-fast",
+        sub2api_bridge_compat=True,
+        request_payload={"messages": [{"role": "user", "content": "hello"}]},
+    )
+
+    output = converter.feed(
+        b'data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hello"},"finish_reason":null}]}\n\n'
+    )
+    output += converter.feed(
+        b'data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":0,"total_tokens":3}}\n\n'
+    )
+    output += converter.feed(b"data: [DONE]\n\n")
+    output += converter.flush()
+
+    events = _events(output)
+    completed = events[-1]["response"]
+    usage = completed["usage"]
+    assert usage["output_tokens"] > 0
+    assert usage["input_tokens"] > 0
+    assert usage["estimated"] is True

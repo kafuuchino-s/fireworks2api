@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.dataplane.usage import UsageStats, extract_usage, extract_usage_from_headers, merge_usage
+from app.dataplane.usage import UsageStats, extract_usage, extract_usage_from_headers, merge_usage, maybe_estimate_usage
 
 
 def test_extract_usage_merges_body_and_perf_metrics() -> None:
@@ -67,3 +67,29 @@ def test_extract_usage_supports_responses_terminal_usage_shape() -> None:
 
     assert usage.input_tokens == 8
     assert usage.cached_tokens == 5
+
+
+def test_maybe_estimate_usage_fills_zero_output_tokens_from_request_text() -> None:
+    """When output_tokens is zero and no response payload is available, estimate from request text."""
+    usage = maybe_estimate_usage(
+        UsageStats(input_tokens=3, output_tokens=0, estimated=True),
+        {"messages": [{"role": "user", "content": "hello world this is a test"}]},
+        None,
+        upstream_model="accounts/fireworks/routers/kimi-k2p7-code-fast",
+    )
+
+    assert usage.output_tokens > 0
+    assert usage.estimated is True
+
+
+def test_maybe_estimate_usage_fills_zero_output_tokens_for_responses_input() -> None:
+    """When output_tokens is zero for a responses-style request, estimate from input text."""
+    usage = maybe_estimate_usage(
+        UsageStats(input_tokens=3, output_tokens=0, estimated=True),
+        {"input": "hello world this is a test"},
+        None,
+        upstream_model="accounts/fireworks/routers/kimi-k2p7-code-fast",
+    )
+
+    assert usage.output_tokens > 0
+    assert usage.estimated is True

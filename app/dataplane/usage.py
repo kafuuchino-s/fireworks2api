@@ -425,13 +425,15 @@ def maybe_estimate_usage(
         tokenizer_input = estimate_input_tokens(request_payload or {}, upstream_model) if request_payload else 0
         tokenizer_output = estimate_output_tokens_from_payload(response_payload, upstream_model) if response_payload else 0
         if tokenizer_input or tokenizer_output:
-            return UsageStats(
+            usage = UsageStats(
                 input_tokens=max(usage.input_tokens, tokenizer_input),
                 output_tokens=max(usage.output_tokens, tokenizer_output),
                 cached_tokens=usage.cached_tokens,
                 raw_usage=usage.raw_usage,
                 estimated=True,
             )
+            if usage.input_tokens and usage.output_tokens:
+                return usage
     except Exception:
         # If tokenizer estimation fails, fall back to simple text-length estimate.
         pass
@@ -460,15 +462,40 @@ def maybe_estimate_usage(
             estimated=True,
         )
 
-    if not usage.output_tokens and response_payload:
-        estimated_output = _estimate_output_tokens_from_payload(response_payload)
-        return UsageStats(
-            input_tokens=usage.input_tokens,
-            output_tokens=estimated_output,
-            cached_tokens=usage.cached_tokens,
-            raw_usage=usage.raw_usage,
-            estimated=True,
-        )
+    if not usage.output_tokens:
+        # If a response payload is available, prefer it; otherwise fall back to a
+        # coarse text-length estimate from the request text so the admin log never
+        # reports zero output for a successful streaming response.
+        estimated_output = 0
+        if response_payload:
+            estimated_output = _estimate_output_tokens_from_payload(response_payload)
+        if not estimated_output and isinstance(request_payload, dict):
+            if "messages" in request_payload:
+                text_parts: list[str] = []
+                for message in request_payload.get("messages", []):
+                    if isinstance(message, dict):
+                        text_parts.extend(_collect_text_parts_from_content(message.get("content")))
+                estimated_output = _estimate_output_tokens_from_text("".join(text_parts))
+            elif "input" in request_payload:
+                input_value = request_payload.get("input")
+                if isinstance(input_value, str):
+                    estimated_output = _estimate_output_tokens_from_text(input_value)
+                elif isinstance(input_value, list):
+                    text_parts = []
+                    for item in input_value:
+                        if isinstance(item, dict):
+                            text_parts.extend(_collect_text_parts_from_content(item.get("content")))
+                        elif isinstance(item, str):
+                            text_parts.append(item)
+                    estimated_output = _estimate_output_tokens_from_text("".join(text_parts))
+        if estimated_output:
+            return UsageStats(
+                input_tokens=usage.input_tokens,
+                output_tokens=estimated_output,
+                cached_tokens=usage.cached_tokens,
+                raw_usage=usage.raw_usage,
+                estimated=True,
+            )
 
     return usage
 

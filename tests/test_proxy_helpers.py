@@ -117,19 +117,21 @@ def test_chat_payload_preserves_explicit_top_k(top_k: int) -> None:
 
     assert payload["top_k"] == top_k
 
-def test_chat_payload_defaults_kimi_k2p6_to_stable_instant_sampling() -> None:
+def test_chat_payload_does_not_inject_kimi_k2p6_sampling_defaults() -> None:
+    """Kimi K2.6 sampling defaults are handled by Fireworks; we do not inject them."""
     context = _context(resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/routers/kimi-k2p6-turbo"))
 
     payload, _, report = build_chat_adapter(context)
 
-    assert payload["thinking"] == {"type": "disabled"}
-    assert payload["temperature"] == 0.6
-    assert payload["top_p"] == 0.95
-    assert payload["top_k"] == 40
-    assert {"field": "thinking", "action": "default", "to": "disabled", "reason": "kimi_k2p6_fireworks_chat_stability"} in report["field_changes"]
+    assert "thinking" not in payload
+    assert "temperature" not in payload
+    assert "top_p" not in payload
+    assert "top_k" not in payload
+    assert not any(change["field"] in {"thinking", "temperature", "top_p", "top_k"} for change in report["field_changes"])
 
 
-def test_chat_payload_preserves_kimi_thinking_enabled_with_fixed_sampling() -> None:
+def test_chat_payload_preserves_kimi_thinking_enabled_without_sampling_defaults() -> None:
+    """User-provided thinking is preserved; no Fireworks-side sampling defaults are injected."""
     context = _context(
         resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/routers/kimi-k2p6-turbo"),
         body={"model": "test", "messages": [], "thinking": {"type": "enabled"}},
@@ -138,13 +140,14 @@ def test_chat_payload_preserves_kimi_thinking_enabled_with_fixed_sampling() -> N
     payload, _, report = build_chat_adapter(context)
 
     assert payload["thinking"] == {"type": "enabled"}
-    assert payload["temperature"] == 1.0
-    assert payload["top_p"] == 0.95
-    assert payload["top_k"] == 40
+    assert "temperature" not in payload
+    assert "top_p" not in payload
+    assert "top_k" not in payload
     assert not any(change["field"] == "thinking" for change in report["field_changes"])
 
 
 def test_chat_payload_preserves_kimi_reasoning_effort_without_injecting_thinking() -> None:
+    """Reasoning effort is preserved and no implicit sampling defaults are injected."""
     context = _context(
         resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/routers/kimi-k2p6-turbo"),
         body={"model": "test", "messages": [], "reasoning_effort": "high"},
@@ -154,9 +157,9 @@ def test_chat_payload_preserves_kimi_reasoning_effort_without_injecting_thinking
 
     assert payload["reasoning_effort"] == "high"
     assert "thinking" not in payload
-    assert payload["temperature"] == 1.0
-    assert payload["top_p"] == 0.95
-    assert payload["top_k"] == 40
+    assert "temperature" not in payload
+    assert "top_p" not in payload
+    assert "top_k" not in payload
     assert not any(change["field"] == "thinking" for change in report["field_changes"])
 
 

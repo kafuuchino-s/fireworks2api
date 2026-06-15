@@ -296,6 +296,7 @@ def test_anthropic_messages_adapter_injects_reasoning_top_k_default(upstream_mod
 
 
 def test_anthropic_messages_adapter_preserves_explicit_top_k() -> None:
+    """Explicit top_k is preserved; Kimi K2.6 sampling defaults are not injected."""
     payload, _, report = build_messages_adapter(
         _messages_adapter_context(
             {"model": "kimi-k2.6", "messages": [{"role": "user", "content": "hello"}], "max_tokens": 1, "top_k": 50},
@@ -304,9 +305,9 @@ def test_anthropic_messages_adapter_preserves_explicit_top_k() -> None:
     )
 
     assert payload["top_k"] == 50
-    assert payload["thinking"] == {"type": "disabled"}
-    assert payload["temperature"] == 0.6
-    assert payload["top_p"] == 0.95
+    assert "thinking" not in payload
+    assert "temperature" not in payload
+    assert "top_p" not in payload
     assert not any(change["field"] == "top_k" for change in report["field_changes"])
 
 
