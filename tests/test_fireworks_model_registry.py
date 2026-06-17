@@ -16,6 +16,17 @@ def test_aliases_and_lookup() -> None:
     assert official_model_metadata("accounts/fireworks/models/gpt-oss-120b")["label"] == "GPT OSS 120B"
 
 
+def test_registry_includes_glm_5p2() -> None:
+    glm52 = official_model_metadata("accounts/fireworks/models/glm-5p2")
+    assert glm52["upstream_model"] == "accounts/fireworks/models/glm-5p2"
+    assert glm52["label"] == "GLM 5.2"
+    assert glm52["supported_functionality"]["context_length"] == 1040000
+    assert glm52["supported_functionality"]["function_calling"] is True
+    assert glm52["supported_functionality"]["image_input"] is False
+    assert glm52["pricing"]["standard"]["input"] == 1.4
+    assert glm52["pricing"]["priority"]["input"] == 2.1
+
+
 def test_registry_includes_verified_capability_metadata() -> None:
     kimi = official_model_metadata("accounts/fireworks/models/kimi-k2p6")
     assert kimi["supported_functionality"]["context_length"] == 262144

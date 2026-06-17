@@ -6,7 +6,8 @@ from typing import Any
 
 
 SOURCE_URL = "https://docs.fireworks.ai/serverless/pricing"
-SOURCE_CHECKED_AT = datetime(2026, 6, 13, tzinfo=timezone.utc)
+SOURCE_CHECKED_AT = datetime(2026, 6, 17, tzinfo=timezone.utc)
+GLM_5P2_SOURCE_URL = "https://fireworks.ai/models/fireworks/glm-5p2"
 DEEPSEEK_V4_FLASH_SOURCE_URL = "https://fireworks.ai/models/deepseek-ai/deepseek-v4-flash"
 
 
@@ -109,7 +110,27 @@ _OFFICIAL_MODELS: tuple[OfficialFireworksModel, ...] = (
         source_url=DEEPSEEK_V4_FLASH_SOURCE_URL,
     ),
     OfficialFireworksModel("accounts/fireworks/models/deepseek-v3", "DeepSeek V3 family", "text", True, "accounts/fireworks/models/deepseek-v3", ("deepseek-v3",), _functionality(), {"standard": _pricing(0.56, 0.28, 1.68)}),
-    OfficialFireworksModel("accounts/fireworks/models/glm-5p1", "GLM 5.1", "text", True, "accounts/fireworks/models/glm-5p1", ("glm-5.1",), _functionality(202752, tools=True, image=False), {"standard": _pricing(1.4, 0.26, 4.4), "priority": _pricing(2.1, 0.39, 6.6)}),
+    OfficialFireworksModel(
+        model_id="accounts/fireworks/models/glm-5p2",
+        label="GLM 5.2",
+        kind="text",
+        recommended=True,
+        upstream_model="accounts/fireworks/models/glm-5p2",
+        aliases=("glm-5.2",),
+        supported_functionality=_functionality(1040000, tools=True, image=False),
+        pricing={"standard": _pricing(1.4, 0.26, 4.4), "priority": _pricing(2.1, 0.39, 6.6)},
+        source_url=GLM_5P2_SOURCE_URL,
+    ),
+    OfficialFireworksModel(
+        model_id="accounts/fireworks/models/glm-5p1",
+        label="GLM 5.1",
+        kind="text",
+        recommended=True,
+        upstream_model="accounts/fireworks/models/glm-5p1",
+        aliases=("glm-5.1",),
+        supported_functionality=_functionality(202752, tools=True, image=False),
+        pricing={"standard": _pricing(1.4, 0.26, 4.4), "priority": _pricing(2.1, 0.39, 6.6)},
+    ),
     OfficialFireworksModel("accounts/fireworks/routers/glm-5p1-fast", "GLM 5.1 Fast router", "text", True, "accounts/fireworks/routers/glm-5p1-fast", ("glm-5.1-fast",), _functionality(202752, tools=True, image=False), {"fast": _pricing(2.8, 0.52, 8.8)}),
     OfficialFireworksModel("accounts/fireworks/models/glm-5", "GLM 5", "text", True, "accounts/fireworks/models/glm-5", ("glm-5",), _functionality(202752, tools=True, image=False), {"standard": _pricing(1.0, 0.2, 3.2)}),
     OfficialFireworksModel("accounts/fireworks/models/glm-4p7", "GLM 4.7", "text", True, "accounts/fireworks/models/glm-4p7", ("glm-4.7",), _functionality(), {"standard": _pricing(0.6, 0.3, 2.2)}),

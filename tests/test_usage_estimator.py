@@ -26,6 +26,7 @@ _tiktoken = pytest.importorskip("tiktoken")
         ("accounts/fireworks/models/deepseek-v4-pro", "Say hello.", 1, 50),
         ("accounts/fireworks/models/deepseek-v4-flash", "Say hello.", 1, 50),
         # GLM models.
+        ("accounts/fireworks/models/glm-5p2", "Say hello.", 1, 50),
         ("accounts/fireworks/models/glm-5p1", "Say hello.", 1, 50),
         ("accounts/fireworks/routers/glm-5p1-fast", "Say hello.", 1, 50),
     ],

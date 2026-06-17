@@ -19,6 +19,7 @@ _KNOWN_TOKENIZER_MAPPINGS: dict[str, tuple[str, float]] = {
     "accounts/fireworks/models/kimi-k2p5": ("MoonshotAI/Kimi-K2.5", 1.50),
     "accounts/fireworks/models/deepseek-v4-pro": ("deepseek-ai/DeepSeek-V3", 1.25),
     "accounts/fireworks/models/deepseek-v4-flash": ("deepseek-ai/DeepSeek-V3", 1.25),
+    "accounts/fireworks/models/glm-5p2": ("THUDM/glm-4-9b-chat", 1.50),
     "accounts/fireworks/models/glm-5p1": ("THUDM/glm-4-9b-chat", 1.50),
     "accounts/fireworks/routers/glm-5p1-fast": ("THUDM/glm-4-9b-chat", 1.50),
 }
