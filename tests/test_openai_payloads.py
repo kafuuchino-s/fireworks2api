@@ -288,6 +288,7 @@ def test_chat_route_forwards_nested_advanced_fields(monkeypatch) -> None:
                 "response_format": {"type": "json_object"},
                 "thinking": {"enabled": True},
                 "metadata": {"tag": "x"},
+                "reasoning_history": "preserved",
             },
             settings=SimpleNamespace(affinity_hash_secret="affinity-secret", log_hash_secret="log-secret", upstream_base_url="https://api.fireworks.ai/inference/v1"),
             request_headers={"x-session-affinity": "affinity"},
@@ -310,6 +311,7 @@ def test_chat_route_forwards_nested_advanced_fields(monkeypatch) -> None:
     assert captured["payload"]["response_format"]["type"] == "json_object"
     assert captured["payload"]["thinking"]["enabled"] is True
     assert captured["payload"]["metadata"]["tag"] == "x"
+    assert captured["payload"]["reasoning_history"] == "preserved"
 
 
 @pytest.mark.parametrize(

@@ -36,6 +36,8 @@ def validate_chat_body(body: dict[str, Any]) -> None:
     _validate_object(body, "metadata")
     _validate_object(body, "reasoning")
     _validate_object(body, "text")
+    if "reasoning_history" in body and not (body["reasoning_history"] is None or (isinstance(body["reasoning_history"], str) and body["reasoning_history"] in {"disabled", "interleaved", "preserved"})):
+        raise_openai_error("'reasoning_history' must be disabled, interleaved, preserved, or null", param="reasoning_history", code="invalid_request_error")
     if "user" in body and not isinstance(body.get("user"), str):
         raise_openai_error("'user' must be a string", param="user", code="invalid_request_error")
     if body.get("stream_options") is not None:

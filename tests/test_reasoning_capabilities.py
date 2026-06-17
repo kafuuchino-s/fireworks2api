@@ -29,10 +29,16 @@ def test_unknown_family_defaults_to_advisory() -> None:
         ("accounts/fireworks/models/minimax-m2p7", "max", "high", True),
         ("accounts/fireworks/models/glm-5p1", "xhigh", "high", True),
         ("accounts/fireworks/routers/glm-5p1-fast", "max", "high", True),
+        # GLM 5.2 supports two tiers (high + max/xhigh, default Max); keep max/xhigh.
+        ("accounts/fireworks/models/glm-5p2", "xhigh", "xhigh", False),
+        ("accounts/fireworks/models/glm-5p2", "max", "max", False),
         ("accounts/fireworks/models/deepseek-v4-pro", "xhigh", "xhigh", False),
         ("accounts/fireworks/models/deepseek-v4-pro", "max", "max", False),
+        ("accounts/fireworks/models/deepseek-v4-flash", "max", "max", False),
         ("accounts/fireworks/models/kimi-k2p6", "xhigh", "xhigh", False),
         ("accounts/fireworks/routers/kimi-k2p6-turbo", "max", "max", False),
+        ("accounts/fireworks/models/kimi-k2p7-code", "xhigh", "xhigh", False),
+        ("accounts/fireworks/routers/kimi-k2p7-code-fast", "max", "max", False),
     ],
 )
 def test_normalize_responses_reasoning_effort_for_smoked_models(
@@ -45,3 +51,22 @@ def test_normalize_responses_reasoning_effort_for_smoked_models(
 
     assert normalized == expected
     assert (reason is not None) is changed
+
+
+@pytest.mark.parametrize(
+    "upstream_model",
+    [
+        "accounts/fireworks/models/kimi-k2p6",
+        "accounts/fireworks/routers/kimi-k2p6-turbo",
+        "accounts/fireworks/models/kimi-k2p7-code",
+        "accounts/fireworks/routers/kimi-k2p7-code-fast",
+    ],
+)
+def test_kimi_family_is_classified_as_reasoning_capable(upstream_model: str) -> None:
+    caps = classify_reasoning_model(upstream_model)
+    assert caps.supports_reasoning_effort is True
+    assert caps.supports_thinking is True
+    assert caps.supports_disable is True
+    assert caps.min_thinking_budget_tokens == 1024
+    assert "preserved" in caps.reasoning_history_values
+    assert caps.enforcement == "advisory"

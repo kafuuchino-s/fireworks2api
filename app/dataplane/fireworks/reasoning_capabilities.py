@@ -51,6 +51,16 @@ def _family_capabilities(upstream_model: str) -> ReasoningModelCapabilities:
             notes=("Docs-backed reasoning-capable family; keep enforcement advisory.",),
         )
 
+    if base.startswith("kimi-"):
+        return ReasoningModelCapabilities(
+            supports_reasoning_effort=True,
+            supports_thinking=True,
+            supports_disable=True,
+            min_thinking_budget_tokens=1024,
+            reasoning_history_values=("disabled", "interleaved", "preserved"),
+            notes=("Docs-backed Kimi reasoning family; keep enforcement advisory.",),
+        )
+
     return _DEFAULT_CAPABILITIES
 
 
@@ -85,7 +95,17 @@ def normalize_responses_reasoning_effort(
         return raw.lower() if raw.lower() != effort else effort, None
 
     base = (upstream_model or "").strip().lower().rsplit("/", 1)[-1]
-    if base.startswith(("glm-", "minimax-m2", "gpt-oss-", "deepseek-v3")):
+    # Per Fireworks API reference (docs.fireworks.ai/api-reference/post-chatcompletions,
+    # reasoning_effort model-specific behavior):
+    #   GLM 5.2 has two tiers — 'high' (High) and 'max'/'xhigh' (Max, the default);
+    #   'low'/'medium' collapse to 'high'. xhigh and max both select the Max tier.
+    # Older GLM (4.5/4.6/4.7/5.1) is binary on/off and rejects max/xhigh, so we
+    # downgrade those to 'high'. Keep GLM 5.2's max/xhigh intact so it runs at Max.
+    # NOTE: local docs/fireworks/post-chatcompletions.md cache predates GLM 5.x;
+    # the GLM 5.2 row is only on the live API reference page so far.
+    if base.startswith("glm-") and not base.startswith("glm-5p2"):
+        return "high", "model_accepts_highest_effort_as_high"
+    if base.startswith(("minimax-m2", "gpt-oss-", "deepseek-v3")):
         return "high", "model_accepts_highest_effort_as_high"
     if value != effort:
         return value, "reasoning_effort_alias_normalized"

@@ -20,7 +20,7 @@ COMPLETIONS_PUBLIC_FIELDS = OPENAI_COMPLETIONS_PUBLIC | FIREWORKS_COMPLETIONS_EX
 EMBEDDINGS_PUBLIC_FIELDS = OPENAI_EMBEDDINGS_PUBLIC | FIREWORKS_EMBEDDINGS_EXTENSION_FIELDS
 RERANK_PUBLIC_FIELDS = OPENAI_RERANK_PUBLIC | FIREWORKS_RERANK_EXTENSION_FIELDS
 
-CHAT_NESTED_FIELDS = {"tools", "tool_choice", "response_format", "thinking", "metadata", "reasoning", "text"}
+CHAT_NESTED_FIELDS = {"tools", "tool_choice", "response_format", "thinking", "metadata", "reasoning", "reasoning_history", "text"}
 COMPLETIONS_NESTED_FIELDS = {"response_format", "thinking", "metadata", "reasoning", "reasoning_history", "prediction"}
 
 
