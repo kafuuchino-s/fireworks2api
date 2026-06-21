@@ -207,6 +207,97 @@ def test_admin_cleanup_invalid_keys(monkeypatch: MonkeyPatch) -> None:
         client.delete(f"/admin/keys/{name}", headers=headers)
 
 
+def test_admin_cleanup_invalid_keys_removes_quota_exhausted(monkeypatch: MonkeyPatch) -> None:
+    _require_auth(monkeypatch)
+    headers = {"Authorization": "Bearer token"}
+
+    class FakeResponse:
+        def __init__(self, status_code: int):
+            self.status_code = status_code
+            self.headers = {}
+            self.text = "x"
+        def json(self):
+            return {"data": []}
+
+    class FakeClient:
+        def __init__(self, settings, api_key):
+            self.api_key = api_key
+        async def __aenter__(self): return self
+        async def __aexit__(self, exc_type, exc, tb): return None
+        async def get_json(self, path, params=None):
+            # 额度用尽的 key 在账号探测时仍返回 200（账号仍存在、认证仍有效），
+            # 验证旧逻辑不会误删、新逻辑会按本地快照删除。
+            return FakeResponse(200)
+
+    monkeypatch.setattr(admin_keys, "FireworksManagementClient", FakeClient)
+    monkeypatch.setattr(admin_keys, "FireworksClient", FakeClient)
+
+    repo = app.state.repository
+
+    # 1) 正常 key —— 应保留。
+    ok = client.post("/admin/keys", headers=headers, json={"api_key": "fw_ok_valid_shape"})
+    assert ok.status_code == 201
+    ok_name = ok.json()["name"]
+
+    # 2) 额度已用尽账号下的 key —— 应删除。
+    exhausted = client.post("/admin/keys", headers=headers, json={"api_key": "fw_exhausted_valid_shape"})
+    assert exhausted.status_code == 201
+    exhausted_name = exhausted.json()["name"]
+    exhausted_fp = repo.get_key(exhausted_name).fingerprint
+    repo.upsert_fireworks_key_snapshot({
+        "key_fingerprint": exhausted_fp,
+        "account_id": "accounts/test-exhausted-acct",
+        "account_label": "exhausted",
+        "quota_supported": True,
+        "quota_status": "quota_exhausted",
+        "quota_status_code": 402,
+        "quota_summary_json": json.dumps({"count": 1, "monthly_budget": 100, "monthly_used": 100}),
+        "quota_items_json": json.dumps([]),
+    })
+    # 标记为额度用尽被禁用（与 failover 真实路径一致）。
+    repo.set_key_enabled(exhausted_name, False, "upstream_account_unavailable", "quota_exhausted")
+    # 该账号设一个冷却记录，验证孤儿清理。
+    repo.set_account_cooldown("test-exhausted-acct", "2099-01-01T00:00:00+00:00", "quota_exhausted")
+
+    # 3) 管理员手动禁用的 key（非额度用尽）—— 应保留。
+    admin_disabled = client.post("/admin/keys", headers=headers, json={"api_key": "fw_admin_disabled_valid_shape"})
+    assert admin_disabled.status_code == 201
+    admin_disabled_name = admin_disabled.json()["name"]
+    repo.set_key_enabled(admin_disabled_name, False, "admin_disabled", None)
+
+    response = client.post("/admin/keys/cleanup-invalid", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    statuses = {item["name"]: item for item in body["items"]}
+
+    # 额度用尽 key 被删除，reason 为 quota_exhausted。
+    assert statuses[exhausted_name]["status"] == "deleted"
+    assert statuses[exhausted_name]["reason"] == "quota_exhausted"
+    assert statuses[exhausted_name].get("account_id") == "test-exhausted-acct"
+    assert repo.get_key(exhausted_name) is None
+
+    # 正常 key 与管理员手动禁用的 key 都保留。
+    assert statuses[ok_name]["status"] == "kept"
+    assert repo.get_key(ok_name) is not None
+    assert statuses[admin_disabled_name]["status"] == "kept"
+    assert repo.get_key(admin_disabled_name) is not None
+    assert repo.get_key(admin_disabled_name).enabled is False
+
+    # 孤儿清理：该账号下已无 key，额度快照与冷却记录应被删除。
+    assert repo.get_fireworks_account_quota_snapshot("test-exhausted-acct") is None
+    assert repo.get_account_cooldown("test-exhausted-acct") is None
+
+    # 计数对账：3 个 key 检查，1 个删除，2 个保留。
+    assert body["checked"] == 3
+    assert body["deleted"] == 1
+    assert body["kept"] == 2
+    assert "fw_exhausted_valid_shape" not in response.text
+
+    # 清理剩余测试 key。
+    for name in (ok_name, admin_disabled_name):
+        client.delete(f"/admin/keys/{name}", headers=headers)
+
+
 def test_bootstrap_from_env_does_not_resync_when_disabled(tmp_path) -> None:
     db_path = tmp_path / "bootstrap.sqlite3"
     init_db(db_path)

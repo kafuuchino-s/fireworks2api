@@ -266,6 +266,37 @@ async def cleanup_invalid_keys(request: Request):
     items: list[dict[str, Any]] = []
     deleted = 0
     kept = 0
+
+    # 额度已用尽的账号集合（来自账号级额度快照）+ key 指纹到 account_id 的映射。
+    # account_id 统一去掉 "accounts/" 前缀，以便与额度快照表（已 normalize）对齐。
+    exhausted_accounts: set[str] = {
+        snap.account_id
+        for snap in repository.list_fireworks_account_quota_snapshots()
+        if snap.quota_status == "quota_exhausted"
+    }
+    fingerprint_to_account: dict[str, str] = {}
+    for snap in repository.list_fireworks_key_snapshots():
+        account_id = (snap.account_id or "").strip()
+        if account_id.startswith("accounts/"):
+            account_id = account_id[len("accounts/") :]
+        account_id = account_id.strip()
+        if account_id:
+            fingerprint_to_account[snap.key_fingerprint] = account_id
+
+    def _is_quota_exhausted_key(record) -> bool:
+        account_id = fingerprint_to_account.get(record.fingerprint)
+        if account_id and account_id in exhausted_accounts:
+            return True
+        # 兜底：本地禁用标记为额度用尽（即便额度快照缺失或状态不一致）。
+        # 注意排除 admin_disabled 等人为禁用的情况。
+        return (
+            record.enabled is False
+            and record.disabled_reason == "upstream_account_unavailable"
+            and record.last_error_type == "quota_exhausted"
+        )
+
+    cleaned_accounts: set[str] = set()
+
     for record in repository.list_keys(include_disabled=True):
         if _is_locally_malformed_fireworks_key(record.api_key):
             repository.delete_key(record.name)
@@ -277,6 +308,22 @@ async def cleanup_invalid_keys(request: Request):
                 "status": "deleted",
                 "reason": "malformed_key",
                 "status_code": None,
+            })
+            continue
+        if _is_quota_exhausted_key(record):
+            account_id = fingerprint_to_account.get(record.fingerprint)
+            if account_id:
+                cleaned_accounts.add(account_id)
+            repository.delete_key(record.name)
+            deleted += 1
+            items.append({
+                "name": record.name,
+                "masked_key": _key_payload(repository, record)["masked_key"],
+                "fingerprint": record.fingerprint,
+                "status": "deleted",
+                "reason": "quota_exhausted",
+                "status_code": None,
+                "account_id": account_id,
             })
             continue
         try:
@@ -317,5 +364,11 @@ async def cleanup_invalid_keys(request: Request):
                 "reason": reason,
                 "status_code": status_code,
             })
+
+    # 清理孤儿：删光某额度用尽账号下所有 key 后，移除其额度快照与冷却记录。
+    for account_id in cleaned_accounts:
+        if not repository.keys_for_account(account_id):
+            repository.delete_fireworks_account_quota_snapshot(account_id)
+            repository.clear_account_cooldown(account_id)
 
     return {"checked": len(items), "deleted": deleted, "kept": kept, "items": items}

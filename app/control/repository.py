@@ -620,6 +620,48 @@ class AppRepository:
         with self._connect() as conn:
             conn.execute("DELETE FROM fireworks_key_snapshots WHERE key_fingerprint=?", (fingerprint,))
 
+    def delete_fireworks_account_quota_snapshot(self, account_id: str) -> None:
+        account_id = self._normalize_account_id(account_id)
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM fireworks_account_quota_snapshots WHERE account_id=?",
+                (account_id,),
+            )
+
+    def keys_for_account(self, account_id: str) -> list[KeyRecord]:
+        """Return all keys whose fireworks_key_snapshots.account_id matches the given account.
+
+        Tolerates the ``accounts/`` prefix that some snapshots store.
+        """
+        account_id = self._normalize_account_id(account_id)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT k.*
+                FROM keys k
+                JOIN fireworks_key_snapshots s ON s.key_fingerprint = k.fingerprint
+                WHERE s.account_id = ?
+                   OR s.account_id = ?
+                ORDER BY k.name
+                """,
+                (account_id, f"accounts/{account_id}"),
+            ).fetchall()
+        return [
+            KeyRecord(
+                name=row["name"],
+                api_key=row["api_key_ciphertext"],
+                fingerprint=row["fingerprint"],
+                enabled=bool(row["enabled"]),
+                cooldown_until=row["cooldown_until"],
+                disabled_reason=row["disabled_reason"],
+                last_error_type=row["last_error_type"],
+                last_error_at=row["last_error_at"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+            for row in rows
+        ]
+
     def set_account_cooldown(self, account_id: str, cooldown_until: str | None, error_type: str | None) -> None:
         account_id = self._normalize_account_id(account_id)
         ts = now_iso()
