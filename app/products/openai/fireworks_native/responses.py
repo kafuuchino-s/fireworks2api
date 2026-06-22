@@ -240,20 +240,22 @@ def _validate_responses_input_message(
         if item_type == "message":
             pass
         elif item_type == "output_text":
-            if not _is_nonempty_str(message.get("text")):
-                raise_openai_error("output_text items require text", param=f"input[{index}].text", code="invalid_request_error")
+            if "text" in message and not isinstance(message["text"], str):
+                raise_openai_error("output_text.text must be a string", param=f"input[{index}].text", code="invalid_request_error")
             return
         elif item_type == "function_call_output":
-            if not _is_nonempty_str(message.get("call_id")):
-                raise_openai_error("function_call_output items require call_id", param=f"input[{index}].call_id", code="invalid_request_error")
-            if "output" not in message:
-                raise_openai_error("function_call_output items require output", param=f"input[{index}].output", code="invalid_request_error")
+            # Fireworks treats CreateResponse.input as an open object array
+            # (additionalProperties: true) with no required fields, and the
+            # sub2api reference also tolerates missing call_id/output. Only
+            # validate the type of fields that are present; let upstream decide
+            # whether a missing call_id/output is acceptable.
+            if "output" in message and not isinstance(message["output"], str):
+                raise_openai_error("function_call_output.output must be a string", param=f"input[{index}].output", code="invalid_request_error")
             return
         elif item_type == "function_call":
-            if not _is_nonempty_str(message.get("call_id")):
-                raise_openai_error("function_call items require call_id", param=f"input[{index}].call_id", code="invalid_request_error")
-            if not _is_nonempty_str(message.get("name")):
-                raise_openai_error("function_call items require name", param=f"input[{index}].name", code="invalid_request_error")
+            # Same rationale: input-side function_call fields are not required
+            # by Fireworks. Validate types only, not presence, so history
+            # replay items that omit name/call_id are forwarded as-is.
             if "arguments" in message and not isinstance(message["arguments"], str):
                 raise_openai_error("function_call.arguments must be a string", param=f"input[{index}].arguments", code="invalid_request_error")
             return
@@ -262,10 +264,8 @@ def _validate_responses_input_message(
         elif item_type not in _RESPONSES_OUTPUT_ITEM_TYPES:
             raise_openai_error(f"unsupported input item type '{item_type}'", param=f"input[{index}].type", code="unsupported_parameter")
         else:
-            if not _is_nonempty_str(message.get("tool_call_id")):
-                raise_openai_error("tool_output items require tool_call_id", param=f"input[{index}].tool_call_id", code="invalid_request_error")
-            if "output" not in message:
-                raise_openai_error("tool_output items require output", param=f"input[{index}].output", code="invalid_request_error")
+            if "output" in message and not isinstance(message["output"], str):
+                raise_openai_error("tool_output.output must be a string", param=f"input[{index}].output", code="invalid_request_error")
             return
     role = message.get("role")
     if not _is_nonempty_str(role):
@@ -403,41 +403,6 @@ def validate_responses_body(body: dict[str, Any]) -> None:
         raise_openai_error("'previous_response_id' must not be empty", param="previous_response_id", code="invalid_request_error")
     if "user" in body and not isinstance(body["user"], str):
         raise_openai_error("'user' must be a string", param="user", code="invalid_request_error")
-    if "input" in body and isinstance(body["input"], list):
-        for index, item in enumerate(body["input"]):
-            if not isinstance(item, dict) or not item:
-                raise_openai_error("input list items must be objects", param=f"input[{index}]", code="invalid_request_error")
-            item_type = item.get("type")
-            if item_type is None:
-                continue
-            if item_type == "message":
-                continue
-            if item_type == "output_text":
-                if not _is_nonempty_str(item.get("text")):
-                    raise_openai_error("output_text items require text", param=f"input[{index}].text", code="invalid_request_error")
-                continue
-            if item_type == "function_call_output":
-                if not _is_nonempty_str(item.get("call_id")):
-                    raise_openai_error("function_call_output items require call_id", param=f"input[{index}].call_id", code="invalid_request_error")
-                if "output" not in item:
-                    raise_openai_error("function_call_output items require output", param=f"input[{index}].output", code="invalid_request_error")
-                continue
-            if item_type == "function_call":
-                if not _is_nonempty_str(item.get("call_id")):
-                    raise_openai_error("function_call items require call_id", param=f"input[{index}].call_id", code="invalid_request_error")
-                if not _is_nonempty_str(item.get("name")):
-                    raise_openai_error("function_call items require name", param=f"input[{index}].name", code="invalid_request_error")
-                if "arguments" in item and not isinstance(item["arguments"], str):
-                    raise_openai_error("function_call.arguments must be a string", param=f"input[{index}].arguments", code="invalid_request_error")
-                continue
-            if item_type == "reasoning":
-                continue
-            if item_type not in _RESPONSES_OUTPUT_ITEM_TYPES:
-                raise_openai_error(f"unsupported input item type '{item_type}'", param=f"input[{index}].type", code="unsupported_parameter")
-            if not _is_nonempty_str(item.get("tool_call_id")):
-                raise_openai_error("tool_output items require tool_call_id", param=f"input[{index}].tool_call_id", code="invalid_request_error")
-            if "output" not in item:
-                raise_openai_error("tool_output items require output", param=f"input[{index}].output", code="invalid_request_error")
     _validate_int_range(body, "max_output_tokens", positive=True)
     _validate_int_range(body, "max_tokens", positive=True)
     _validate_int_range(body, "max_tool_calls", positive=True)

@@ -262,16 +262,48 @@ def test_validate_responses_body_accepts_function_call_output_continuation() -> 
     )
 
 
+# Fireworks treats CreateResponse.input as an open object array
+# (additionalProperties: true) with no required fields, and the sub2api
+# reference tolerates missing fields via rawString. These input-side items
+# must be accepted with missing optional fields and forwarded as-is — only
+# the types of fields that ARE present are validated.
 @pytest.mark.parametrize(
-    ("body", "param"),
+    "item",
     [
-        ({"model": "test", "input": [{"type": "tool_output", "tool_call_id": "", "output": "done"}]}, "input[0].tool_call_id"),
-        ({"model": "test", "input": [{"type": "tool_output", "output": "done"}]}, "input[0].tool_call_id"),
+        {"type": "function_call", "arguments": "{}"},
+        {"type": "function_call", "call_id": "call_1"},
+        {"type": "function_call", "call_id": "call_1", "name": "Read"},
+        {"type": "function_call", "name": "Read"},
+        {"type": "function_call", "call_id": "call_1", "name": "Read", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "call_1"},
+        {"type": "function_call_output", "output": "done"},
+        {"type": "function_call_output"},
+        {"type": "tool_output", "tool_call_id": "call_1"},
+        {"type": "tool_output", "output": "done"},
+        {"type": "tool_output", "tool_call_id": "", "output": "done"},
+        {"type": "tool_output", "output": "done"},
+        {"type": "output_text", "text": ""},
+        {"type": "output_text"},
     ],
 )
-def test_validate_responses_body_rejects_malformed_tool_output(body, param) -> None:
+def test_validate_responses_body_accepts_input_items_with_missing_optional_fields(item) -> None:
+    # Should not raise — input-side field presence is not enforced.
+    native_responses.validate_responses_body({"model": "test", "input": [item]})
+
+
+@pytest.mark.parametrize(
+    ("item", "param"),
+    [
+        ({"type": "function_call", "call_id": "call_1", "arguments": 1}, "input[0].arguments"),
+        ({"type": "function_call_output", "call_id": "call_1", "output": 1}, "input[0].output"),
+        ({"type": "tool_output", "tool_call_id": "call_1", "output": 1}, "input[0].output"),
+        ({"type": "output_text", "text": 1}, "input[0].text"),
+    ],
+)
+def test_validate_responses_body_rejects_wrong_typed_input_fields(item, param) -> None:
+    # Type validation of present fields is still enforced.
     with pytest.raises(OpenAIRequestError) as exc:
-        native_responses.validate_responses_body(body)
+        native_responses.validate_responses_body({"model": "test", "input": [item]})
 
     assert exc.value.param == param
 

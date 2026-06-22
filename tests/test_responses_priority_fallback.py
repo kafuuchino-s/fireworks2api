@@ -481,7 +481,86 @@ def test_reasoning_model_responses_fallback_drops_unmatched_tool_output(monkeypa
     assert any(change.get("field") == "input.function_call_output[call_1]" and change.get("action") == "dropped" for change in captured["route_trace"]["field_actions"])
 
 
-def test_reasoning_model_responses_fallback_drops_mcp_tools(monkeypatch: MonkeyPatch) -> None:
+def test_reasoning_model_responses_fallback_drops_function_call_missing_name(monkeypatch: MonkeyPatch) -> None:
+    # Fireworks does not require name/call_id on input-side function_call items
+    # (CreateResponse.input is an open object array). When the Chat Completions
+    # fallback cannot map such an item to a valid tool_call, it must drop it
+    # lossy instead of rejecting the whole request with a 400.
+    _require_auth(monkeypatch)
+    captured: dict[str, object] = {}
+
+    async def fake_build_proxy_context(request, body):
+        return _context(body, upstream_model="accounts/fireworks/models/deepseek-v4-pro")
+
+    async def fake_proxy_fireworks_request(context, **kwargs):
+        captured.update(kwargs)
+        return _fallback_proxy_response(kwargs)
+
+    def fake_build_route_transform_trace(*args, **kwargs):
+        captured["route_trace"] = kwargs
+        return {"field_actions": kwargs["field_actions"], "warnings": kwargs["warnings"]}
+
+    monkeypatch.setattr(responses_mod, "build_proxy_context_from_body", fake_build_proxy_context)
+    monkeypatch.setattr(responses_mod, "proxy_fireworks_request", fake_proxy_fireworks_request)
+    monkeypatch.setattr(responses_mod, "build_route_transform_trace", fake_build_route_transform_trace)
+
+    response = client.post(
+        "/v1/responses",
+        headers={"Authorization": "Bearer token"},
+        json={
+            "model": "deepseek-v4-pro",
+            "input": [
+                {"type": "message", "role": "user", "content": "hello"},
+                {"type": "function_call", "call_id": "call_1", "arguments": "{}"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["payload"]["messages"] == [{"role": "user", "content": "hello"}]
+    assert any(
+        change.get("field") == "input.function_call[call_1]" and change.get("action") == "dropped"
+        for change in captured["route_trace"]["field_actions"]
+    )
+
+
+def test_reasoning_model_responses_fallback_drops_function_call_output_missing_call_id(monkeypatch: MonkeyPatch) -> None:
+    _require_auth(monkeypatch)
+    captured: dict[str, object] = {}
+
+    async def fake_build_proxy_context(request, body):
+        return _context(body, upstream_model="accounts/fireworks/models/deepseek-v4-pro")
+
+    async def fake_proxy_fireworks_request(context, **kwargs):
+        captured.update(kwargs)
+        return _fallback_proxy_response(kwargs)
+
+    def fake_build_route_transform_trace(*args, **kwargs):
+        captured["route_trace"] = kwargs
+        return {"field_actions": kwargs["field_actions"], "warnings": kwargs["warnings"]}
+
+    monkeypatch.setattr(responses_mod, "build_proxy_context_from_body", fake_build_proxy_context)
+    monkeypatch.setattr(responses_mod, "proxy_fireworks_request", fake_proxy_fireworks_request)
+    monkeypatch.setattr(responses_mod, "build_route_transform_trace", fake_build_route_transform_trace)
+
+    response = client.post(
+        "/v1/responses",
+        headers={"Authorization": "Bearer token"},
+        json={
+            "model": "deepseek-v4-pro",
+            "input": [
+                {"type": "message", "role": "user", "content": "hello"},
+                {"type": "function_call_output", "output": "done"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["payload"]["messages"] == [{"role": "user", "content": "hello"}]
+    assert any(
+        change.get("field") == "input.function_call_output[unknown]" and change.get("action") == "dropped"
+        for change in captured["route_trace"]["field_actions"]
+    )
     _require_auth(monkeypatch)
     captured: dict[str, object] = {}
 

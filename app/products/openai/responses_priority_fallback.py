@@ -458,13 +458,33 @@ def build_priority_chat_payload(
             if allow_bridge_drops and item_type == "function_call":
                 call_id = item.get("call_id")
                 name = item.get("name")
-                if not isinstance(call_id, str) or not call_id.strip():
-                    raise_openai_error("function_call items require call_id", param=f"input[{index}].call_id", code="invalid_request_error")
-                if not isinstance(name, str) or not name.strip():
-                    raise_openai_error("function_call items require name", param=f"input[{index}].name", code="invalid_request_error")
                 arguments = item.get("arguments", "")
+                # Chat Completions tool_calls require both id and function.name.
+                # Fireworks treats input-side function_call fields as optional
+                # (CreateResponse.input is an open object array), so a history
+                # replay item that omits call_id/name cannot be mapped to a
+                # valid chat tool_call. Drop it lossy instead of rejecting the
+                # whole request, mirroring the native responses path.
+                if not isinstance(call_id, str) or not call_id.strip() or not isinstance(name, str) or not name.strip():
+                    _record_lossy_drop(
+                        report["field_changes"],
+                        report["warnings"],
+                        field=f"input.function_call[{call_id or 'unknown'}]",
+                        reason=fallback_reason,
+                        detail="function_call item missing call_id or name was dropped in the Responses to Chat fallback",
+                    )
+                    pending_reasoning = ""
+                    continue
                 if not isinstance(arguments, str):
-                    raise_openai_error("function_call.arguments must be a string", param=f"input[{index}].arguments", code="invalid_request_error")
+                    _record_lossy_drop(
+                        report["field_changes"],
+                        report["warnings"],
+                        field=f"input.function_call[{call_id}]",
+                        reason=fallback_reason,
+                        detail="function_call item with non-string arguments was dropped in the Responses to Chat fallback",
+                    )
+                    pending_reasoning = ""
+                    continue
                 if not arguments.strip():
                     arguments = "{}"
                 tool_call = {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}}
@@ -481,11 +501,21 @@ def build_priority_chat_payload(
                 continue
             if allow_bridge_drops and item_type == "function_call_output":
                 call_id = item.get("call_id")
+                output = item.get("output")
+                # A tool reply without call_id cannot be matched to a tool_call
+                # in Chat Completions. Drop lossy instead of rejecting, since
+                # Fireworks does not require these fields on input items.
                 if not isinstance(call_id, str) or not call_id.strip():
-                    raise_openai_error("function_call_output items require call_id", param=f"input[{index}].call_id", code="invalid_request_error")
-                if "output" not in item:
-                    raise_openai_error("function_call_output items require output", param=f"input[{index}].output", code="invalid_request_error")
-                messages.append({"role": "tool", "tool_call_id": call_id, "content": _json_string(item["output"])})
+                    _record_lossy_drop(
+                        report["field_changes"],
+                        report["warnings"],
+                        field=f"input.function_call_output[{call_id or 'unknown'}]",
+                        reason=fallback_reason,
+                        detail="function_call_output item missing call_id was dropped in the Responses to Chat fallback",
+                    )
+                    pending_reasoning = ""
+                    continue
+                messages.append({"role": "tool", "tool_call_id": call_id, "content": _json_string(output if output is not None else "")})
                 pending_reasoning = ""
                 continue
             if allow_bridge_drops and item_type not in (None, "message"):
