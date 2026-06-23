@@ -289,6 +289,11 @@ def _validate_responses_input(value: Any) -> None:
 
 
 def _validate_responses_tool(tool: Any, *, index: int) -> None:
+    # Fireworks tools schema is items: {additionalProperties: true, type: object}
+    # — fully open, upstream does not validate tool internal fields. We keep a
+    # light-touch guard (tool must be a non-empty object with a known "type")
+    # and otherwise validate only the TYPES of fields that are present, not
+    # their presence/non-emptiness. Forward as-is and let Fireworks decide.
     if not isinstance(tool, dict) or not tool:
         raise_openai_error("tool object must include 'type'", param=f"tools[{index}].type", code="invalid_request_error")
     tool_type = tool.get("type")
@@ -299,72 +304,77 @@ def _validate_responses_tool(tool: Any, *, index: int) -> None:
     if tool_type == "function":
         function = tool.get("function")
         if isinstance(function, dict):
-            if not isinstance(function.get("name"), str) or not function.get("name"):
+            if "name" not in function:
                 raise_openai_error("function tools require function.name", param=f"tools[{index}].function.name", code="invalid_request_error")
+            if function.get("name") is not None and not isinstance(function.get("name"), str):
+                raise_openai_error("function.name must be a string", param=f"tools[{index}].function.name", code="invalid_request_error")
             allowed_function_keys = {"name", "description", "parameters", "schema", "strict"}
             for key in function:
                 if key not in allowed_function_keys:
                     raise_openai_error(f"unsupported function tool field '{key}'", param=f"tools[{index}].function.{key}", code="unsupported_parameter")
+            if "parameters" in function and function["parameters"] is not None and not isinstance(function["parameters"], dict):
+                raise_openai_error("function.parameters must be an object", param=f"tools[{index}].function.parameters", code="invalid_request_error")
+            if "description" in function and function["description"] is not None and not isinstance(function["description"], str):
+                raise_openai_error("function.description must be a string", param=f"tools[{index}].function.description", code="invalid_request_error")
+            if "strict" in function and function["strict"] is not None and not isinstance(function["strict"], bool):
+                raise_openai_error("function.strict must be a boolean", param=f"tools[{index}].function.strict", code="invalid_request_error")
         else:
             allowed_flat_keys = {"type", "name", "description", "parameters", "strict"}
             for key in tool:
                 if key not in allowed_flat_keys:
                     raise_openai_error(f"unsupported function tool field '{key}'", param=f"tools[{index}].{key}", code="unsupported_parameter")
-            if not _is_nonempty_str(tool.get("name")):
+            if "name" not in tool:
                 raise_openai_error("function tools require name", param=f"tools[{index}].name", code="invalid_request_error")
-            if "parameters" in tool and not isinstance(tool["parameters"], dict):
+            if tool.get("name") is not None and not isinstance(tool.get("name"), str):
+                raise_openai_error("function.name must be a string", param=f"tools[{index}].name", code="invalid_request_error")
+            if "parameters" in tool and tool["parameters"] is not None and not isinstance(tool["parameters"], dict):
                 raise_openai_error("function.parameters must be an object", param=f"tools[{index}].parameters", code="invalid_request_error")
             if "description" in tool and tool["description"] is not None and not isinstance(tool["description"], str):
                 raise_openai_error("function.description must be a string", param=f"tools[{index}].description", code="invalid_request_error")
-            if "strict" in tool and not isinstance(tool["strict"], bool):
+            if "strict" in tool and tool["strict"] is not None and not isinstance(tool["strict"], bool):
                 raise_openai_error("function.strict must be a boolean", param=f"tools[{index}].strict", code="invalid_request_error")
     elif tool_type == "mcp":
         allowed_mcp_keys = {"type", "server_url", "url", "label", "name", "server_label", "server_description", "allowed_tools", "headers", "require_approval"}
         for key in tool:
             if key not in allowed_mcp_keys:
                 raise_openai_error(f"unsupported mcp tool field '{key}'", param=f"tools[{index}].{key}", code="unsupported_parameter")
-        server_url = tool.get("server_url", tool.get("url"))
-        if not isinstance(server_url, str) or not server_url.strip():
-            raise_openai_error("mcp tools require server_url", param=f"tools[{index}].server_url", code="invalid_request_error")
-        if "url" in tool:
-            if not isinstance(tool["url"], str) or not tool["url"].strip():
-                raise_openai_error("mcp tools require url to be a non-empty string when provided", param=f"tools[{index}].url", code="invalid_request_error")
+        # Type-check string fields only; do not require non-empty (Fireworks
+        # tools schema is open and does not constrain these).
         for key in ("server_url", "url", "label", "name", "server_label", "server_description"):
-            if key in tool and (not isinstance(tool[key], str) or not tool[key].strip()):
-                raise_openai_error(f"mcp tools require {key} to be a non-empty string when provided", param=f"tools[{index}].{key}", code="invalid_request_error")
-        if "allowed_tools" in tool:
-            if not isinstance(tool["allowed_tools"], list) or not tool["allowed_tools"]:
-                raise_openai_error("mcp.allowed_tools must be a non-empty list", param=f"tools[{index}].allowed_tools", code="invalid_request_error")
+            if key in tool and tool[key] is not None and not isinstance(tool[key], str):
+                raise_openai_error(f"mcp tools {key} must be a string when provided", param=f"tools[{index}].{key}", code="invalid_request_error")
+        if "allowed_tools" in tool and tool["allowed_tools"] is not None:
+            if not isinstance(tool["allowed_tools"], list):
+                raise_openai_error("mcp.allowed_tools must be a list", param=f"tools[{index}].allowed_tools", code="invalid_request_error")
             for allowed_index, allowed_tool in enumerate(tool["allowed_tools"]):
-                if not isinstance(allowed_tool, str) or not allowed_tool.strip():
-                    raise_openai_error("mcp.allowed_tools entries must be non-empty strings", param=f"tools[{index}].allowed_tools[{allowed_index}]", code="invalid_request_error")
-        if "headers" in tool:
+                if allowed_tool is not None and not isinstance(allowed_tool, str):
+                    raise_openai_error("mcp.allowed_tools entries must be strings", param=f"tools[{index}].allowed_tools[{allowed_index}]", code="invalid_request_error")
+        if "headers" in tool and tool["headers"] is not None:
             headers = tool["headers"]
-            if not isinstance(headers, dict) or not headers:
+            if not isinstance(headers, dict):
                 raise_openai_error("mcp.headers must be an object", param=f"tools[{index}].headers", code="invalid_request_error")
             for header_name, header_value in headers.items():
-                if not isinstance(header_name, str) or not header_name.strip():
-                    raise_openai_error("mcp.headers keys must be non-empty strings", param=f"tools[{index}].headers", code="invalid_request_error")
-                if not isinstance(header_value, str):
+                if not isinstance(header_name, str):
+                    raise_openai_error("mcp.headers keys must be strings", param=f"tools[{index}].headers", code="invalid_request_error")
+                if header_value is not None and not isinstance(header_value, str):
                     raise_openai_error("mcp.headers values must be strings", param=f"tools[{index}].headers.{header_name}", code="invalid_request_error")
-        if "require_approval" in tool and not isinstance(tool["require_approval"], (bool, str, dict)):
+        if "require_approval" in tool and tool["require_approval"] is not None and not isinstance(tool["require_approval"], (bool, str, dict)):
             raise_openai_error("mcp.require_approval must be a boolean, string, or object", param=f"tools[{index}].require_approval", code="invalid_request_error")
     elif tool_type == "sse":
-        server_url = tool.get("server_url", tool.get("url"))
-        if not isinstance(server_url, str) or not server_url.strip():
-            raise_openai_error("sse tools require server_url", param=f"tools[{index}].server_url", code="invalid_request_error")
-        if "server_url" in tool and tool["server_url"] != server_url:
-            raise_openai_error("sse tools require server_url", param=f"tools[{index}].server_url", code="invalid_request_error")
+        for key in ("server_url", "url"):
+            if key in tool and tool[key] is not None and not isinstance(tool[key], str):
+                raise_openai_error(f"sse tools {key} must be a string when provided", param=f"tools[{index}].{key}", code="invalid_request_error")
     elif tool_type == "python":
-        if "name" in tool and (not isinstance(tool["name"], str) or not tool["name"].strip()):
-            raise_openai_error("python tools require name to be a non-empty string when provided", param=f"tools[{index}].name", code="invalid_request_error")
+        if "name" in tool and tool["name"] is not None and not isinstance(tool["name"], str):
+            raise_openai_error("python tools name must be a string when provided", param=f"tools[{index}].name", code="invalid_request_error")
     elif tool_type == "web_search":
         allowed_web_search_keys = {"type", "search_context_size", "user_location", "filters"}
         for key in tool:
             if key not in allowed_web_search_keys:
                 raise_openai_error(f"unsupported web_search tool field '{key}'", param=f"tools[{index}].{key}", code="unsupported_parameter")
-        if "search_context_size" in tool and tool["search_context_size"] not in {"low", "medium", "high"}:
+        if "search_context_size" in tool and tool["search_context_size"] is not None and tool["search_context_size"] not in {"low", "medium", "high"}:
             raise_openai_error("web_search.search_context_size must be low, medium, or high", param=f"tools[{index}].search_context_size", code="invalid_request_error")
+
 
 
 def validate_responses_body(body: dict[str, Any]) -> None:

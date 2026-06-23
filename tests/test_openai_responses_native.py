@@ -26,14 +26,9 @@ client = TestClient(app)
         ({"model": "test", "input": "hello", "tool_choice": {"type": 1}}, "tool_choice.type"),
         ({"model": "test", "input": "hello", "tools": [{"type": "function", "function": {"name": "lookup", "extra": True}}]}, "tools[0].function.extra"),
         ({"model": "test", "input": "hello", "tools": [{"type": "function", "name": "lookup", "parameters": []}]}, "tools[0].parameters"),
-        ({"model": "test", "input": "hello", "tools": [{"type": "mcp"}]}, "tools[0].server_url"),
-        ({"model": "test", "input": "hello", "tools": [{"type": "mcp", "server_url": ""}]}, "tools[0].server_url"),
         ({"model": "test", "input": "hello", "tools": [{"type": "mcp", "server_url": "https://example.com", "extra": True}]}, "tools[0].extra"),
         ({"model": "test", "input": "hello", "tools": [{"type": "mcp", "server_url": "https://example.com", "headers": [1]}]}, "tools[0].headers"),
         ({"model": "test", "input": "hello", "tools": [{"type": "mcp", "server_url": "https://example.com", "headers": {"Authorization": 1}}]}, "tools[0].headers.Authorization"),
-        ({"model": "test", "input": "hello", "tools": [{"type": "mcp", "server_url": "https://example.com", "allowed_tools": []}]}, "tools[0].allowed_tools"),
-        ({"model": "test", "input": "hello", "tools": [{"type": "sse"}]}, "tools[0].server_url"),
-        ({"model": "test", "input": "hello", "tools": [{"type": "python", "name": ""}]}, "tools[0].name"),
         ({"model": "test", "input": "hello", "user": 1}, "user"),
     ],
 )
@@ -42,6 +37,22 @@ def test_validate_responses_body_rejects_invalid_native_fields(body, param) -> N
         native_responses.validate_responses_body(body)
 
     assert isinstance(exc.value, OpenAIRequestError)
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [
+        # Fireworks tools schema is additionalProperties: true (open); server_url
+        # and other string fields are not required and may be empty. Forward as-is.
+        {"type": "mcp"},
+        {"type": "mcp", "server_url": ""},
+        {"type": "mcp", "server_url": "https://example.com", "allowed_tools": []},
+        {"type": "sse"},
+        {"type": "python", "name": ""},
+    ],
+)
+def test_validate_responses_body_accepts_tools_with_empty_optional_fields(tool) -> None:
+    native_responses.validate_responses_body({"model": "test", "input": "hello", "tools": [tool]})
 
 
 def test_validate_responses_body_accepts_minimal_native_tools() -> None:
