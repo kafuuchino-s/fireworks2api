@@ -21,7 +21,7 @@ def _validate_image_block(block: Any) -> None:
     for key in block:
         if key not in {"type", "source", "cache_control"}:
             raise anthropic_error("invalid image content block", param="messages", code="invalid_request_error")
-    if "cache_control" in block and not isinstance(block.get("cache_control"), dict):
+    if "cache_control" in block and block.get("cache_control") is not None and not isinstance(block.get("cache_control"), dict):
         raise anthropic_error("invalid image content block", param="messages", code="invalid_request_error")
     source = block.get("source")
     if not isinstance(source, dict):
@@ -32,14 +32,16 @@ def _validate_image_block(block: Any) -> None:
             raise anthropic_error("invalid image content block", param="messages", code="invalid_request_error")
         if source.get("media_type") not in {"image/jpeg", "image/png", "image/gif", "image/webp"}:
             raise anthropic_error("invalid image content block", param="messages", code="invalid_request_error")
-        if not isinstance(source.get("data"), str) or not source.get("data"):
+        if not isinstance(source.get("data"), str):
             raise anthropic_error("invalid image content block", param="messages", code="invalid_request_error")
         return
     if source_type == "url":
         if set(source) != {"type", "url"}:
             raise anthropic_error("invalid image content block", param="messages", code="invalid_request_error")
         url = source.get("url")
-        if not isinstance(url, str) or not url.startswith("https://"):
+        # AnthropicURLImageSource.url is type: string with no scheme/format
+        # constraint upstream; validate type only and forward as-is.
+        if not isinstance(url, str):
             raise anthropic_error("invalid image content block", param="messages", code="invalid_request_error")
         return
     if source_type == "file":
@@ -93,6 +95,11 @@ def _validate_message_content(content: Any) -> None:
             continue
         if isinstance(block, dict) and block.get("type") == "tool_use":
             _validate_tool_use_block(block)
+            continue
+        # document, thinking, and redacted_thinking blocks are valid Fireworks
+        # Anthropic input content blocks. Forward them as-is (type-only check)
+        # rather than rejecting — upstream decides whether to act on them.
+        if isinstance(block, dict) and block.get("type") in {"document", "thinking", "redacted_thinking"}:
             continue
         raise anthropic_error("invalid message content block", param="messages", code="invalid_request_error")
 
@@ -201,7 +208,7 @@ def validate_messages_body(body: dict[str, Any]) -> None:
             pass
         else:
             raise anthropic_error("'tool_choice' must be a string or object", param="tool_choice", code="invalid_request_error")
-    if "raw_output" in body and not isinstance(body.get("raw_output"), bool):
+    if "raw_output" in body and body.get("raw_output") is not None and not isinstance(body.get("raw_output"), bool):
         raise anthropic_error("'raw_output' must be a boolean", param="raw_output", code="invalid_request_error")
     service_tier = body.get("service_tier")
     if isinstance(service_tier, str):
@@ -212,7 +219,7 @@ def validate_messages_body(body: dict[str, Any]) -> None:
         raise anthropic_error("unsupported service_tier", param="service_tier", code="unsupported_parameter")
     if "thinking" in body:
         thinking = body.get("thinking")
-        if thinking.get("type") not in {"enabled", "disabled"}:
+        if thinking.get("type") not in {"enabled", "disabled", "adaptive"}:
             raise anthropic_error("'thinking' has invalid type", param="thinking", code="invalid_request_error")
         budget_tokens = thinking.get("budget_tokens")
         if budget_tokens is not None:

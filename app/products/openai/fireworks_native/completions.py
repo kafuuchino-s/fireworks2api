@@ -19,8 +19,8 @@ def validate_completions_body(body: dict[str, Any]) -> None:
     _validate_float_range(body, "top_p", min_value=0, max_value=1)
     if body.get("top_k") is not None:
         _validate_int_range(body, "top_k", min_value=0, max_value=100)
-    _validate_int_range(body, "max_tokens", positive=True)
-    _validate_int_range(body, "max_completion_tokens", positive=True)
+    _validate_int_range(body, "max_tokens")
+    _validate_int_range(body, "max_completion_tokens")
     _validate_bool(body, "stream")
     _validate_bool(body, "echo")
     _validate_bool(body, "return_token_ids")
@@ -43,7 +43,7 @@ def validate_completions_body(body: dict[str, Any]) -> None:
         _validate_images(body["images"])
     if "reasoning_history" in body and not (body["reasoning_history"] is None or (isinstance(body["reasoning_history"], str) and body["reasoning_history"] in {"disabled", "interleaved", "preserved"})):
         raise_openai_error("'reasoning_history' must be disabled, interleaved, preserved, or null", param="reasoning_history", code="invalid_request_error")
-    if "prediction" in body and not isinstance(body["prediction"], (dict, str)):
+    if "prediction" in body and body["prediction"] is not None and not isinstance(body["prediction"], (dict, str)):
         raise_openai_error("'prediction' must be a string or object", param="prediction", code="invalid_request_error")
     if "max_completion_tokens" in body and "max_tokens" in body:
         raise_openai_error("'max_tokens' and 'max_completion_tokens' are mutually exclusive", param="max_completion_tokens", code="unsupported_parameter")
@@ -84,7 +84,7 @@ def build_completions_adapter(context) -> tuple[dict[str, Any], dict[str, str], 
         warnings.append("thinking is likely unsupported for this upstream model family")
     if body.get("reasoning_effort") is not None and capabilities.supports_reasoning_effort is False:
         warnings.append("reasoning_effort is likely unsupported for this upstream model family")
-    if isinstance(body.get("prompt"), str) and "images" in body:
+    if isinstance(body.get("prompt"), str) and isinstance(body.get("images"), list):
         prompt_images = count_prompt_images(body["prompt"])
         image_count = len(body["images"])
         if prompt_images != image_count:

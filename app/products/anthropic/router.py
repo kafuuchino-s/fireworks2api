@@ -78,8 +78,8 @@ async def _handle_messages(request: Request):
         return anthropic_error_response("invalid JSON body", code="invalid_request")
     if not isinstance(body, dict):
         return anthropic_error_response("JSON body must be an object", code="invalid_request")
-    if "max_tokens" not in body:
-        return anthropic_error_response("'max_tokens' is required", param="max_tokens", code="missing_required_parameter")
+    # max_tokens is optional on Fireworks' Anthropic messages schema (only
+    # model and messages are required); do not pre-reject a missing max_tokens.
     try:
         validate_messages_body(body)
     except HTTPException as exc:

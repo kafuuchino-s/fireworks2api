@@ -528,8 +528,24 @@ def test_anthropic_messages_adapter_supports_url_image_blocks(monkeypatch: Monke
     assert response.status_code == 200
 
 
-def test_anthropic_messages_adapter_rejects_malformed_url_image_block(monkeypatch: MonkeyPatch) -> None:
+def test_anthropic_messages_adapter_accepts_http_url_image_block(monkeypatch: MonkeyPatch) -> None:
     _require_auth(monkeypatch)
+
+    async def fake_build_proxy_context_from_body(request, body):
+        return SimpleNamespace(
+            body=body,
+            resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/kimi-k2p6"),
+            request_headers={},
+            stable_key="stable-key",
+            settings=SimpleNamespace(affinity_hash_secret="affinity", log_hash_secret="log"),
+        )
+
+    async def fake_proxy_fireworks_request(*args, **kwargs):
+        return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(anthropic_router, "build_proxy_context_from_body", fake_build_proxy_context_from_body)
+    monkeypatch.setattr(anthropic_router, "proxy_fireworks_request", fake_proxy_fireworks_request)
+
     response = client.post(
         "/v1/messages",
         headers=_anthropic_headers(),
@@ -539,11 +555,29 @@ def test_anthropic_messages_adapter_rejects_malformed_url_image_block(monkeypatc
             "max_tokens": 1,
         },
     )
-    assert response.status_code == 400
+    # Fireworks AnthropicURLImageSource.url is type: string with no scheme
+    # constraint; an http:// URL is forwarded as-is and upstream decides.
+    assert response.status_code == 200
 
 
-def test_anthropic_messages_adapter_rejects_empty_base64_image_data(monkeypatch: MonkeyPatch) -> None:
+def test_anthropic_messages_adapter_accepts_empty_base64_image_data(monkeypatch: MonkeyPatch) -> None:
     _require_auth(monkeypatch)
+
+    async def fake_build_proxy_context_from_body(request, body):
+        return SimpleNamespace(
+            body=body,
+            resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/kimi-k2p6"),
+            request_headers={},
+            stable_key="stable-key",
+            settings=SimpleNamespace(affinity_hash_secret="affinity", log_hash_secret="log"),
+        )
+
+    async def fake_proxy_fireworks_request(*args, **kwargs):
+        return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(anthropic_router, "build_proxy_context_from_body", fake_build_proxy_context_from_body)
+    monkeypatch.setattr(anthropic_router, "proxy_fireworks_request", fake_proxy_fireworks_request)
+
     response = client.post(
         "/v1/messages",
         headers=_anthropic_headers(),
@@ -553,10 +587,12 @@ def test_anthropic_messages_adapter_rejects_empty_base64_image_data(monkeypatch:
             "max_tokens": 1,
         },
     )
-    assert response.status_code == 400
+    # Fireworks base64 image data is type: string with no minLength; an empty
+    # data string is forwarded as-is and upstream decides.
+    assert response.status_code == 200
 
 
-def test_anthropic_messages_adapter_requires_max_tokens(monkeypatch: MonkeyPatch) -> None:
+def test_anthropic_messages_adapter_accepts_missing_max_tokens(monkeypatch: MonkeyPatch) -> None:
     _require_auth(monkeypatch)
 
     async def fake_build_proxy_context_from_body(request, body):
@@ -579,8 +615,9 @@ def test_anthropic_messages_adapter_requires_max_tokens(monkeypatch: MonkeyPatch
         headers=_anthropic_headers(),
         json={"model": "kimi-k2.6", "messages": [{"role": "user", "content": "hello"}]},
     )
-    assert response.status_code == 400
-    assert response.json()["error"]["param"] == "max_tokens"
+    # Fireworks Anthropic schema only requires model and messages; max_tokens
+    # is optional and a missing max_tokens must not be rejected.
+    assert response.status_code == 200
 
 
 def test_anthropic_messages_adapter_omits_default_service_tier() -> None:
@@ -694,7 +731,6 @@ def test_anthropic_messages_adapter_validates_tools_tool_choice_and_thinking(mon
         {"tool_choice": {"type": "tool"}},
         {"tool_choice": {"bad": True}},
         {"tool_choice": {"type": "auto", "name": "x"}},
-        {"thinking": {"type": "adaptive", "budget_tokens": 1024}},
         {"thinking": {"type": "enabled", "budget_tokens": 512}},
         {"thinking": {"type": "enabled", "budget_tokens": 4096}, "max_tokens": 2048},
     ]

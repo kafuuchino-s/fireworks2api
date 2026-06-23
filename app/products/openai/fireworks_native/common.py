@@ -48,6 +48,11 @@ def _validate_int_range(body: dict[str, Any], field: str, *, min_value: int | No
     if field not in body:
         return
     value = body[field]
+    # Fireworks marks most numeric fields anyOf: [integer, null]; treat an
+    # explicit null as "unset" and let _copy_allowed drop it, rather than
+    # rejecting the request.
+    if value is None:
+        return
     if not _is_int(value):
         raise_openai_error(f"'{field}' must be an integer", param=field, code="invalid_request_error")
     if positive and value <= 0:
@@ -62,6 +67,8 @@ def _validate_float_range(body: dict[str, Any], field: str, *, min_value: float,
     if field not in body:
         return
     value = body[field]
+    if value is None:
+        return
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise_openai_error(f"'{field}' must be a number", param=field, code="invalid_request_error")
     if value < min_value or value > max_value:
@@ -69,12 +76,12 @@ def _validate_float_range(body: dict[str, Any], field: str, *, min_value: float,
 
 
 def _validate_bool(body: dict[str, Any], field: str) -> None:
-    if field in body and not isinstance(body[field], bool):
+    if field in body and body[field] is not None and not isinstance(body[field], bool):
         raise_openai_error(f"'{field}' must be a boolean", param=field, code="invalid_request_error")
 
 
 def _validate_object(body: dict[str, Any], field: str) -> None:
-    if field in body and not isinstance(body[field], dict):
+    if field in body and body[field] is not None and not isinstance(body[field], dict):
         raise_openai_error(f"'{field}' must be an object", param=field, code="invalid_request_error")
 
 
@@ -94,31 +101,35 @@ def _validate_list_of_ints(value: Any, *, field: str) -> None:
 
 
 def _validate_prompt(value: Any) -> None:
+    # Fireworks defines prompt as anyOf: [string, array<string>, array<int>,
+    # array<array<int>>] with no minItems/minLength. Validate the type shape
+    # only; an empty list or empty sublist is upstream-valid, so forward it.
     if isinstance(value, str):
         return
-    if isinstance(value, list) and value:
+    if isinstance(value, list):
         if all(isinstance(item, str) for item in value):
             return
         if all(_is_int(item) for item in value):
             return
-        if all(isinstance(item, list) and item and all(_is_int(subitem) for subitem in item) for item in value):
+        if all(isinstance(item, list) and all(_is_int(subitem) for subitem in item) for item in value):
             return
     raise_openai_error("'prompt' must be a string or supported token array shape", param="prompt", code="invalid_request_error")
 
 
 def _validate_images(value: Any) -> None:
-    def _is_data_url(item: Any) -> bool:
-        if not isinstance(item, str):
-            return False
-        return item.startswith("data:image/jpeg;base64,") or item.startswith("data:image/png;base64,") or item.startswith("data:image/webp;base64,")
-
-    if not isinstance(value, list) or not value:
+    # Fireworks defines images as anyOf: [array<string>, array<array<string>>,
+    # null] with no minItems and no format/prefix constraint on items (they
+    # are plain strings). Validate the type shape only; null and empty lists
+    # are upstream-valid.
+    if value is None:
+        return
+    if not isinstance(value, list):
         raise_openai_error("'images' must be a list", param="images", code="invalid_request_error")
-    if all(_is_data_url(item) for item in value):
+    if all(isinstance(item, str) for item in value):
         return
-    if all(isinstance(item, list) and item and all(_is_data_url(subitem) for subitem in item) for item in value):
+    if all(isinstance(item, list) and all(isinstance(subitem, str) for subitem in item) for item in value):
         return
-    raise_openai_error("'images' must be a list of data URLs or list of lists of data URLs", param="images", code="invalid_request_error")
+    raise_openai_error("'images' must be a list of strings or list of lists of strings", param="images", code="invalid_request_error")
 
 
 def count_prompt_images(prompt: Any) -> int:
@@ -146,20 +157,23 @@ def _validate_embeddings_input(value: Any) -> None:
         if not value:
             raise_openai_error("'input' must not be empty", param="input", code="invalid_request_error")
         return
+    # Fireworks input oneOf includes a structured object variant with no
+    # minProperties; an empty object {} is upstream-valid, so accept it.
     if isinstance(value, dict):
-        if not value:
-            raise_openai_error("'input' must not be empty", param="input", code="invalid_request_error")
         return
     if isinstance(value, list):
         if not value or len(value) > 2048:
             raise_openai_error("'input' must not be empty", param="input", code="invalid_request_error")
-        if all(isinstance(item, str) and item for item in value):
+        # Array-of-strings: items default to '' upstream, so empty string
+        # elements are valid. Array-of-objects: items have no minProperties,
+        # so empty objects are valid. Validate element types only.
+        if all(isinstance(item, str) for item in value):
             return
         if all(_is_int(item) for item in value):
             return
         if all(_is_token_array(item) for item in value):
             return
-        if all(isinstance(item, dict) and item for item in value):
+        if all(isinstance(item, dict) for item in value):
             return
         raise_openai_error("'input' must be a string, object, list of strings, token array, token array batch, or list of objects", param="input", code="invalid_request_error")
         return

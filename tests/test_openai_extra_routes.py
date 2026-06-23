@@ -278,11 +278,12 @@ def test_chat_adapter_accepts_image_url_part() -> None:
     assert payload["messages"][0]["content"][0]["image_url"]["url"] == "https://example.com/cat.png"
 
 
-def test_chat_adapter_rejects_invalid_image_url_part() -> None:
-    with pytest.raises(Exception) as excinfo:
-        build_chat_adapter(_adapter_context({"model": "test", "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {}}]}]}))
+def test_chat_adapter_accepts_empty_image_url_part() -> None:
+    # Fireworks image_url.url is type: string with no scheme/minLength; an
+    # empty image_url object is forwarded as-is and upstream decides.
+    payload, _, _ = build_chat_adapter(_adapter_context({"model": "test", "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {}}]}]}))
 
-    assert getattr(excinfo.value, "code", None) == "invalid_request_error"
+    assert payload["messages"][0]["content"][0]["image_url"] == {}
 
 
 def test_chat_route_uses_base_resolver_and_single_body_load(monkeypatch) -> None:
@@ -447,7 +448,6 @@ def test_rerank_adapter_forwards_documented_fireworks_fields() -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("query", ""),
         ("documents", []),
         ("top_n", 0),
     ],
@@ -465,6 +465,14 @@ def test_rerank_adapter_validates_top_level_values(field, value) -> None:
         raise AssertionError(f"expected {field} to be rejected")
 
 
+def test_rerank_adapter_accepts_empty_query_string() -> None:
+    # Fireworks query is type: string with no minLength; an empty query is
+    # forwarded as-is and upstream decides.
+    payload, _, _ = build_rerank_adapter(_adapter_context({"model": "test", "query": "", "documents": ["a"]}))
+
+    assert payload["query"] == ""
+
+
 def test_rerank_adapter_rejects_openai_field_not_supported_by_fireworks() -> None:
     response_context = _adapter_context({"model": "test", "query": "q", "documents": ["a"], "rank_fields": ["title"]})
 
@@ -477,17 +485,19 @@ def test_rerank_adapter_rejects_openai_field_not_supported_by_fireworks() -> Non
 
 
 def test_rerank_adapter_rejects_schema_error_shape() -> None:
+    # query must still be a string type; a non-string query is rejected.
     with pytest.raises(OpenAIRequestError) as excinfo:
-        build_rerank_adapter(_adapter_context({"model": "test", "query": "", "documents": ["a"]}))
+        build_rerank_adapter(_adapter_context({"model": "test", "query": 123, "documents": ["a"]}))
 
     assert excinfo.value.code == "invalid_request_error"
 
 
-def test_completions_adapter_rejects_plain_http_images() -> None:
-    with pytest.raises(OpenAIRequestError) as excinfo:
-        build_completions_adapter(_adapter_context({"model": "test", "prompt": "hello", "images": ["https://example.com/cat.png"]}))
+def test_completions_adapter_accepts_plain_http_images() -> None:
+    # Fireworks images items are plain strings with no format/prefix constraint;
+    # an https URL (or any string) is forwarded as-is and upstream decides.
+    payload, _, _ = build_completions_adapter(_adapter_context({"model": "test", "prompt": "hello", "images": ["https://example.com/cat.png"]}))
 
-    assert excinfo.value.code == "invalid_request_error"
+    assert payload["images"] == ["https://example.com/cat.png"]
 
 
 def test_completions_adapter_validates_service_tier_and_token_alias_conflict() -> None:

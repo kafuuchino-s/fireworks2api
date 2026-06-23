@@ -315,21 +315,24 @@ def test_chat_route_forwards_nested_advanced_fields(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("body", "param"),
+    "body",
     [
-        ({"model": "test", "messages": [{"role": "tool", "content": "hi"}]}, "messages[0].tool_call_id"),
-        ({"model": "test", "messages": [{"role": "assistant", "content": "hi", "tool_calls": []}]}, "messages[0].tool_calls"),
-        ({"model": "test", "messages": [{"role": "user", "content": [{"type": "audio"}]}]}, "messages[0].content[0].type"),
-        ({"model": "test", "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "http://x"}}]}]}, "messages[0].content[0].image_url"),
+        # tool role without tool_call_id: Fireworks tool_call_id is nullable/optional.
+        {"model": "test", "messages": [{"role": "tool", "content": "hi"}]},
+        # assistant with empty tool_calls: Fireworks tool_calls array has no minItems.
+        {"model": "test", "messages": [{"role": "assistant", "content": "hi", "tool_calls": []}]},
+        # unknown content part type: Fireworks ChatMessageContent.type has no enum.
+        {"model": "test", "messages": [{"role": "user", "content": [{"type": "audio"}]}]},
+        # image_url with http:// url: Fireworks url has no scheme restriction.
+        {"model": "test", "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "http://x"}}]}]},
     ],
 )
-def test_chat_adapter_rejects_invalid_message_shapes(body, param) -> None:
+def test_chat_adapter_accepts_previously_rejected_message_shapes(body) -> None:
     context = _context(body=body)
 
-    with pytest.raises(Exception) as excinfo:
-        build_chat_adapter(context)
-
-    assert getattr(excinfo.value, "param", None) == param
+    # These shapes are forwarded as-is; upstream decides. Must not raise.
+    payload, _, _ = build_chat_adapter(context)
+    assert payload["model"] == "accounts/fireworks/models/test"
 
 
 def test_chat_adapter_accepts_function_tools_and_object_tool_choice() -> None:
@@ -350,13 +353,15 @@ def test_chat_adapter_accepts_tool_result_message_and_forwards_content_parts() -
     assert payload["messages"][0]["content"][0]["text"] == "done"
 
 
-def test_chat_adapter_validates_tool_message_requires_tool_call_id() -> None:
+def test_chat_adapter_accepts_tool_message_without_tool_call_id() -> None:
+    # Fireworks tool_call_id is anyOf: [string, null] and not required; a tool
+    # message without tool_call_id is forwarded as-is.
     context = _context(body={"model": "test", "messages": [{"role": "tool", "content": "done"}]})
 
-    with pytest.raises(Exception) as excinfo:
-        build_chat_adapter(context)
+    payload, _, _ = build_chat_adapter(context)
 
-    assert getattr(excinfo.value, "param", None) == "messages[0].tool_call_id"
+    assert payload["messages"][0]["role"] == "tool"
+    assert "tool_call_id" not in payload["messages"][0]
 
 
 def test_chat_adapter_validates_user_is_string() -> None:
@@ -377,20 +382,19 @@ def test_chat_adapter_validates_stream_options_include_usage_boolean() -> None:
     assert getattr(excinfo.value, "param", None) == "stream_options.include_usage"
 
 
-def test_chat_adapter_rejects_tool_choice_any() -> None:
+def test_chat_adapter_accepts_tool_choice_any() -> None:
+    # Fireworks tool_choice string enum includes "any" (alias for "required").
     context = _context(body={"model": "test", "messages": [{"role": "user", "content": "hi"}], "tool_choice": "any"})
 
-    with pytest.raises(Exception) as excinfo:
-        build_chat_adapter(context)
+    payload, _, _ = build_chat_adapter(context)
 
-    assert getattr(excinfo.value, "param", None) == "tool_choice"
+    assert payload["tool_choice"] == "any"
 
 
 @pytest.mark.parametrize(
     "body",
     [
         {"model": "test", "messages": [{"role": "user", "content": "hi"}], "tools": [{"type": "mcp"}]},
-        {"model": "test", "messages": [{"role": "user", "content": "hi"}], "tools": [{"type": "function", "function": {"name": ""}}]},
         {"model": "test", "messages": [{"role": "user", "content": "hi"}], "tools": [{"type": "function", "function": {"name": "lookup", "parameters": []}}]},
         {"model": "test", "messages": [{"role": "user", "content": "hi"}], "tool_choice": "mcp"},
     ],
@@ -400,6 +404,16 @@ def test_chat_adapter_rejects_unsupported_tools_and_choice(body) -> None:
 
     with pytest.raises(Exception):
         build_chat_adapter(context)
+
+
+def test_chat_adapter_accepts_empty_function_name() -> None:
+    # Fireworks function.name is required (key present) but anyOf: [string, null]
+    # with no minLength; an empty-string name is forwarded as-is.
+    context = _context(body={"model": "test", "messages": [{"role": "user", "content": "hi"}], "tools": [{"type": "function", "function": {"name": ""}}]})
+
+    payload, _, _ = build_chat_adapter(context)
+
+    assert payload["tools"][0]["function"]["name"] == ""
 
 
 def test_completions_route_schema_validation_error_shape(monkeypatch) -> None:
@@ -561,14 +575,16 @@ def test_completions_adapter_warns_on_prompt_image_marker_mismatch() -> None:
     assert any("prompt image marker count" in warning for warning in report["warnings"])
 
 
-@pytest.mark.parametrize("images", [[], ["https://example.com/cat.png"], [["https://example.com/cat.png"]], [["data:image/gif;base64,abc"]]])
-def test_completions_adapter_rejects_invalid_images(images) -> None:
+@pytest.mark.parametrize("images", [[], ["https://example.com/cat.png"], [["https://example.com/cat.png"]], ["data:image/gif;base64,abc"]])
+def test_completions_adapter_accepts_previously_rejected_images(images) -> None:
+    # Fireworks images items are plain strings with no minItems and no
+    # format/prefix constraint; empty lists and any string values are
+    # forwarded as-is and upstream decides.
     context = _context(body={"model": "test", "prompt": "hello", "images": images})
 
-    with pytest.raises(Exception) as excinfo:
-        build_completions_adapter(context)
+    payload, _, _ = build_completions_adapter(context)
 
-    assert getattr(excinfo.value, "code", None) == "invalid_request_error"
+    assert payload["images"] == images
 
 
 def test_completions_adapter_accepts_valid_image_lists() -> None:

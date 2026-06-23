@@ -12,11 +12,11 @@ def validate_embeddings_body(body: dict[str, Any]) -> None:
     if "model" not in body or "input" not in body:
         raise_openai_error("'model' and 'input' are required", param="model", code="missing_required_parameter")
     _validate_embeddings_input(body["input"])
-    if "prompt_template" in body and (not isinstance(body["prompt_template"], str) or not body["prompt_template"].strip()):
-        raise_openai_error("'prompt_template' must be a non-empty string", param="prompt_template", code="invalid_request_error")
+    if "prompt_template" in body and body["prompt_template"] is not None and not isinstance(body["prompt_template"], str):
+        raise_openai_error("'prompt_template' must be a string", param="prompt_template", code="invalid_request_error")
     _validate_int_range(body, "dimensions", positive=True)
     _validate_bool(body, "normalize")
-    if "user" in body and not isinstance(body["user"], str):
+    if "user" in body and body["user"] is not None and not isinstance(body["user"], str):
         raise_openai_error("'user' must be a string", param="user", code="invalid_request_error")
     if "encoding_format" in body:
         if body["encoding_format"] == "float":

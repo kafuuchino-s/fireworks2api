@@ -13,8 +13,8 @@ def validate_rerank_body(body: dict[str, Any]) -> None:
         raise_openai_error("'query' and 'documents' are required", param="query", code="missing_required_parameter")
     if "model" not in body:
         body["model"] = None
-    if not isinstance(body["query"], str) or not body["query"].strip():
-        raise_openai_error("'query' must be a non-empty string", param="query", code="invalid_request_error")
+    if not isinstance(body["query"], str):
+        raise_openai_error("'query' must be a string", param="query", code="invalid_request_error")
     _validate_list_of_strings(body["documents"], field="documents")
     _validate_int_range(body, "top_n", positive=True)
     _validate_bool(body, "return_documents")

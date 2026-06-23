@@ -24,10 +24,18 @@ def test_rerank_native_forwards_optional_fields() -> None:
     assert "task" in payload and payload["task"] is None
 
 
-@pytest.mark.parametrize("field,value", [("query", ""), ("documents", []), ("top_n", 0)])
+@pytest.mark.parametrize("field,value", [("documents", []), ("top_n", 0)])
 def test_rerank_native_validates_required_values(field, value) -> None:
     body = {"query": "q", "documents": ["a"]}
     body[field] = value
     with pytest.raises(OpenAIRequestError) as excinfo:
         build_rerank_adapter(_context(body))
     assert excinfo.value.code == "invalid_request_error"
+
+
+def test_rerank_native_accepts_empty_query_and_null_top_n() -> None:
+    # Fireworks query is type: string with no minLength and top_n is nullable;
+    # both are forwarded as-is and upstream decides.
+    payload, _, _ = build_rerank_adapter(_context({"query": "", "documents": ["a"], "top_n": None}))
+    assert payload["query"] == ""
+    assert payload["top_n"] is None
