@@ -35,7 +35,9 @@ def _is_empty_text_part(part: Any) -> bool:
 def _normalize_responses_input_part(part: dict[str, Any]) -> dict[str, Any]:
     part_type = part.get("type")
     if part_type == "output_text":
-        return {"type": "input_text", "text": part["text"]}
+        # text is optional on input (Fireworks MessageContent.text is nullable);
+        # default to empty string so a missing field does not KeyError.
+        return {"type": "input_text", "text": part.get("text", "")}
     if part_type in {"input_image", "image"}:
         # Fireworks Responses API accepts the OpenAI-compatible shape where
         # image_url is a string URL (https://... or data:image/...).  The
@@ -66,8 +68,10 @@ def _normalize_responses_input_item(
 ) -> tuple[dict[str, Any], int]:
     dropped_empty_text_parts = 0
     if item.get("type") == "output_text":
+        # text is optional on input (Fireworks MessageContent.text is nullable);
+        # default to empty string so a missing field does not KeyError.
         return (
-            {"role": "assistant", "content": [{"type": "input_text", "text": item["text"]}]},
+            {"role": "assistant", "content": [{"type": "input_text", "text": item.get("text", "")}]},
             dropped_empty_text_parts,
         )
     if item.get("type") == "function_call_output":
@@ -205,33 +209,22 @@ def _validate_responses_input_part(part: Any, *, item_index: int, part_index: in
     if part_type not in _RESPONSES_INPUT_PART_TYPES:
         raise_openai_error(f"unsupported input content part type '{part_type}'", param=f"input[{item_index}].content[{part_index}].type", code="unsupported_parameter")
     if part_type in {"text", "input_text", "output_text"}:
-        if not _is_nonempty_str(part.get("text")):
-            raise_openai_error("text input parts require text", param=f"input[{item_index}].content[{part_index}].text", code="invalid_request_error")
+        if "text" in part and not isinstance(part["text"], str):
+            raise_openai_error("text input part text must be a string", param=f"input[{item_index}].content[{part_index}].text", code="invalid_request_error")
         return
+    # input_image: Fireworks MessageContent only requires "type"; image_url is
+    # not a required field and the URL scheme is not constrained by the schema.
+    # The sub2api reference drops parts whose image_url is empty rather than
+    # rejecting the request. Forward the part as-is (the normaliser still
+    # normalises the image_url shape when a URL is present) and let upstream
+    # decide; only reject a present image_url that is not a string/dict.
     image_url = part.get("image_url")
-    if isinstance(image_url, str):
-        url = image_url
-    elif isinstance(image_url, dict) and image_url:
-        url = image_url.get("url")
-    else:
-        # Allow the "image" field used by some Anthropic-style shapes.
-        image = part.get("image")
-        if isinstance(image, str):
-            url = image
-        elif isinstance(image, dict) and image:
-            url = image.get("url")
-        else:
-            raise_openai_error("input_image parts require image_url.url", param=f"input[{item_index}].content[{part_index}].image_url.url", code="invalid_request_error")
-    if not _is_nonempty_str(url):
-        raise_openai_error("input_image parts require image_url.url", param=f"input[{item_index}].content[{part_index}].image_url.url", code="invalid_request_error")
-    if not (url.startswith("https://") or url.startswith("data:image/")):
-        raise_openai_error("input_image parts require https:// or data:image/ URLs", param=f"input[{item_index}].content[{part_index}].image_url.url", code="invalid_request_error")
-    if url.startswith("data:image/") and ";base64," not in url:
-        raise_openai_error("input_image data URLs must be base64-encoded", param=f"input[{item_index}].content[{part_index}].image_url.url", code="invalid_request_error")
+    if image_url is not None and not isinstance(image_url, (str, dict)):
+        raise_openai_error("input_image image_url must be a string or object", param=f"input[{item_index}].content[{part_index}].image_url", code="invalid_request_error")
 
 
 def _validate_responses_input_message(
-    message: Any, *, index: int, allow_empty_text_parts: bool = False
+    message: Any, *, index: int
 ) -> None:
     if not isinstance(message, dict) or not message:
         raise_openai_error("input list items must be message objects", param=f"input[{index}]", code="invalid_request_error")
@@ -267,39 +260,27 @@ def _validate_responses_input_message(
             if "output" in message and not isinstance(message["output"], str):
                 raise_openai_error("tool_output.output must be a string", param=f"input[{index}].output", code="invalid_request_error")
             return
+    # Fireworks CreateResponse.input is an open object array (additionalProperties:
+    # true) with no required fields, and the sub2api reference defaults a missing
+    # role to "user" and tolerates empty/missing/non-list content. Validate types
+    # of present fields only, and forward as-is so upstream decides.
     role = message.get("role")
-    if not _is_nonempty_str(role):
-        raise_openai_error("message objects require role", param=f"input[{index}].role", code="invalid_request_error")
+    if role is not None and not isinstance(role, str):
+        raise_openai_error("message role must be a string", param=f"input[{index}].role", code="invalid_request_error")
     content = message.get("content")
-    if isinstance(content, str):
-        if not content:
-            if allow_empty_text_parts:
-                return  # Bridge mode: let normaliser handle, upstream decides
-            raise_openai_error("message content must not be empty", param=f"input[{index}].content", code="invalid_request_error")
+    if content is None or isinstance(content, str):
         return
     if isinstance(content, list):
-        if not content:
-            if allow_empty_text_parts:
-                return  # Bridge mode: let normaliser handle, upstream decides
-            raise_openai_error("message content must not be empty", param=f"input[{index}].content", code="invalid_request_error")
-        parts_to_validate = [
-            part
-            for part in content
-            if not (allow_empty_text_parts and _is_empty_text_part(part))
-        ]
-        if not parts_to_validate:
-            if allow_empty_text_parts:
-                return  # Bridge mode: all parts are empty text, upstream decides
-            raise_openai_error("message content must not be empty", param=f"input[{index}].content", code="invalid_request_error")
         for part_index, part in enumerate(content):
-            if allow_empty_text_parts and _is_empty_text_part(part):
-                continue
             _validate_responses_input_part(part, item_index=index, part_index=part_index)
         return
-    raise_openai_error("message content must be a string or list of parts", param=f"input[{index}].content", code="invalid_request_error")
+    # Non-string, non-list content: Fireworks' open input schema accepts
+    # arbitrary object shapes, so forward as-is rather than rejecting.
+    return
 
 
-def _validate_responses_input(value: Any, *, allow_empty_text_parts: bool = False) -> None:
+
+def _validate_responses_input(value: Any) -> None:
     if isinstance(value, str):
         if not value:
             raise_openai_error("'input' must not be empty", param="input", code="invalid_request_error")
@@ -308,7 +289,7 @@ def _validate_responses_input(value: Any, *, allow_empty_text_parts: bool = Fals
         if not value:
             raise_openai_error("'input' must not be empty", param="input", code="invalid_request_error")
         for index, item in enumerate(value):
-            _validate_responses_input_message(item, index=index, allow_empty_text_parts=allow_empty_text_parts)
+            _validate_responses_input_message(item, index=index)
         return
     raise_openai_error("'input' must be a string or non-empty list of objects/messages", param="input", code="invalid_request_error")
 
@@ -394,9 +375,7 @@ def _validate_responses_tool(tool: Any, *, index: int) -> None:
 
 def validate_responses_body(body: dict[str, Any]) -> None:
     _require_present(body, "model")
-    _validate_responses_input(
-        _require_present(body, "input"), allow_empty_text_parts=is_sub2api_bridge_shape(body)
-    )
+    _validate_responses_input(_require_present(body, "input"))
     if "previous_response_id" in body and not isinstance(body["previous_response_id"], str):
         raise_openai_error("'previous_response_id' must be a string", param="previous_response_id", code="invalid_request_error")
     if "previous_response_id" in body and not body["previous_response_id"].strip():
@@ -452,9 +431,7 @@ def build_responses_adapter(context) -> tuple[dict[str, Any], dict[str, str], di
     warnings: list[str] = []
     if isinstance(payload.get("input"), list):
         payload["input"], dropped_reasoning, dropped_empty_text_parts = (
-            _normalize_responses_input_items(
-                payload["input"], drop_empty_text_parts=is_sub2api_bridge_shape(body)
-            )
+            _normalize_responses_input_items(payload["input"], drop_empty_text_parts=True)
         )
         if dropped_reasoning:
             field_changes.append({"field": "input", "action": "dropped", "type": "reasoning", "count": dropped_reasoning})

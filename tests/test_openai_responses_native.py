@@ -124,24 +124,25 @@ def test_validate_responses_body_accepts_sub2api_empty_text_placeholder() -> Non
     )
 
 
-def test_validate_responses_body_rejects_plain_empty_text_part() -> None:
-    with pytest.raises(OpenAIRequestError) as exc:
-        native_responses.validate_responses_body(
-            {
-                "model": "test",
-                "input": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": ""},
-                            {"type": "text", "text": "hello"},
-                        ],
-                    }
-                ],
-            }
-        )
-
-    assert exc.value.param == "input[0].content[0].text"
+def test_validate_responses_body_accepts_plain_empty_text_part() -> None:
+    # Fireworks MessageContent.text is nullable and the sub2api reference
+    # skips empty text parts rather than rejecting them. Empty text parts are
+    # accepted for all /v1/responses requests (not only sub2api bridge shape)
+    # and the normaliser drops them before forwarding.
+    native_responses.validate_responses_body(
+        {
+            "model": "test",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": ""},
+                        {"type": "text", "text": "hello"},
+                    ],
+                }
+            ],
+        }
+    )
 
 
 def test_validate_responses_body_allows_all_empty_sub2api_text_parts() -> None:
@@ -232,8 +233,6 @@ def test_validate_responses_body_accepts_valid_input_image_part() -> None:
     ("body", "param"),
     [
         ({"model": "test", "input": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}}]}]}, "input[0].content[0].type"),
-        ({"model": "test", "input": [{"role": "user", "content": [{"type": "input_image", "image_url": {}}]}]}, "input[0].content[0].image_url.url"),
-        ({"model": "test", "input": [{"role": "user", "content": [{"type": "input_image", "image_url": {"url": "http://example.com/cat.png"}}]}]}, "input[0].content[0].image_url.url"),
         ({"model": "test", "input": [{"role": "user", "content": [{"type": "unsupported", "text": "x"}]}]}, "input[0].content[0].type"),
     ],
 )
@@ -242,6 +241,76 @@ def test_validate_responses_body_rejects_invalid_multimodal_input(body, param) -
         native_responses.validate_responses_body(body)
 
     assert exc.value.param == param
+
+
+# Fireworks MessageContent only requires "type"; image_url is optional and the
+# URL scheme is unconstrained. The sub2api reference drops parts with an empty
+# image_url. These inputs must be accepted (forwarded as-is) rather than
+# rejected with a 400.
+@pytest.mark.parametrize(
+    "part",
+    [
+        {"type": "input_image", "image_url": {}},
+        {"type": "input_image", "image_url": {"url": "http://example.com/cat.png"}},
+        {"type": "input_image"},
+        {"type": "image"},
+    ],
+)
+def test_validate_responses_body_accepts_input_image_with_missing_or_unconstrained_url(part) -> None:
+    native_responses.validate_responses_body(
+        {"model": "test", "input": [{"role": "user", "content": [part]}]}
+    )
+
+
+# Fireworks CreateResponse.input is an open object array with no required
+# fields; the sub2api reference defaults a missing role to "user" and
+# tolerates empty/missing/non-list content. These message shapes must be
+# accepted and forwarded as-is.
+@pytest.mark.parametrize(
+    "item",
+    [
+        {"content": "hello"},
+        {"role": "user"},
+        {"role": "user", "content": ""},
+        {"role": "user", "content": []},
+        {"role": "user", "content": [{"type": "input_text", "text": ""}]},
+        {"role": "user", "content": {"nested": "object"}},
+    ],
+)
+def test_validate_responses_body_accepts_message_with_missing_or_empty_fields(item) -> None:
+    native_responses.validate_responses_body({"model": "test", "input": [item]})
+
+
+def test_build_responses_adapter_does_not_crash_on_output_text_without_text() -> None:
+    # output_text items with a missing/empty text field must not raise a
+    # KeyError in the normaliser; the field defaults to "" and is forwarded.
+    context = SimpleNamespace(
+        body={"model": "test", "input": [{"type": "output_text"}]},
+        resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/test"),
+        settings=SimpleNamespace(affinity_hash_secret="affinity-secret", log_hash_secret="log-secret"),
+        request_headers={},
+        stable_key="stable",
+    )
+    payload, _, _ = native_responses.build_responses_adapter(context)
+    assert payload["input"] == [{"role": "assistant", "content": [{"type": "input_text", "text": ""}]}]
+
+
+def test_build_responses_adapter_drops_empty_text_parts_for_all_shapes() -> None:
+    # Empty text parts are dropped by the normaliser for every /v1/responses
+    # request, not only sub2api bridge shape, mirroring the sub2api reference.
+    context = SimpleNamespace(
+        body={
+            "model": "test",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": ""}, {"type": "input_text", "text": "keep"}]}],
+        },
+        resolved_model=SimpleNamespace(upstream_model="accounts/fireworks/models/test"),
+        settings=SimpleNamespace(affinity_hash_secret="affinity-secret", log_hash_secret="log-secret"),
+        request_headers={},
+        stable_key="stable",
+    )
+    payload, _, report = native_responses.build_responses_adapter(context)
+    assert payload["input"] == [{"role": "user", "content": [{"type": "input_text", "text": "keep"}]}]
+    assert any(c.get("type") == "empty_text" for c in report["field_changes"])
 
 
 def test_validate_responses_body_accepts_sse_legacy_url() -> None:
