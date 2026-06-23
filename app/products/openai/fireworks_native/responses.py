@@ -233,32 +233,26 @@ def _validate_responses_input_message(
         if item_type == "message":
             pass
         elif item_type == "output_text":
-            if "text" in message and not isinstance(message["text"], str):
-                raise_openai_error("output_text.text must be a string", param=f"input[{index}].text", code="invalid_request_error")
+            # Open input schema; forward as-is (the normaliser defaults a
+            # missing text to "" and tolerates any present value type).
             return
         elif item_type == "function_call_output":
             # Fireworks treats CreateResponse.input as an open object array
-            # (additionalProperties: true) with no required fields, and the
-            # sub2api reference also tolerates missing call_id/output. Only
-            # validate the type of fields that are present; let upstream decide
-            # whether a missing call_id/output is acceptable.
-            if "output" in message and not isinstance(message["output"], str):
-                raise_openai_error("function_call_output.output must be a string", param=f"input[{index}].output", code="invalid_request_error")
+            # (additionalProperties: true) with no required fields and no field
+            # type constraints. OpenAI's spec also allows output to be a string
+            # or an array of image/file objects, so do not type-check it here;
+            # forward as-is and let upstream decide.
             return
         elif item_type == "function_call":
             # Same rationale: input-side function_call fields are not required
-            # by Fireworks. Validate types only, not presence, so history
-            # replay items that omit name/call_id are forwarded as-is.
-            if "arguments" in message and not isinstance(message["arguments"], str):
-                raise_openai_error("function_call.arguments must be a string", param=f"input[{index}].arguments", code="invalid_request_error")
+            # by Fireworks and the input schema is open. Forward as-is.
             return
         elif item_type == "reasoning":
             return
         elif item_type not in _RESPONSES_OUTPUT_ITEM_TYPES:
             raise_openai_error(f"unsupported input item type '{item_type}'", param=f"input[{index}].type", code="unsupported_parameter")
         else:
-            if "output" in message and not isinstance(message["output"], str):
-                raise_openai_error("tool_output.output must be a string", param=f"input[{index}].output", code="invalid_request_error")
+            # tool_output: open input schema, forward as-is.
             return
     # Fireworks CreateResponse.input is an open object array (additionalProperties:
     # true) with no required fields, and the sub2api reference defaults a missing

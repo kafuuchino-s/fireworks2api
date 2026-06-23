@@ -361,20 +361,23 @@ def test_validate_responses_body_accepts_input_items_with_missing_optional_field
 
 
 @pytest.mark.parametrize(
-    ("item", "param"),
+    "item",
     [
-        ({"type": "function_call", "call_id": "call_1", "arguments": 1}, "input[0].arguments"),
-        ({"type": "function_call_output", "call_id": "call_1", "output": 1}, "input[0].output"),
-        ({"type": "tool_output", "tool_call_id": "call_1", "output": 1}, "input[0].output"),
-        ({"type": "output_text", "text": 1}, "input[0].text"),
+        # OpenAI spec allows function_call_output.output to be a string or an
+        # array of image/file objects; Fireworks input is an open schema. Any
+        # JSON value type is forwarded as-is.
+        {"type": "function_call", "call_id": "call_1", "arguments": 1},
+        {"type": "function_call_output", "call_id": "call_1", "output": 1},
+        {"type": "function_call_output", "call_id": "call_1", "output": [{"type": "image"}]},
+        {"type": "function_call_output", "call_id": "call_1", "output": {"ok": True}},
+        {"type": "tool_output", "tool_call_id": "call_1", "output": 1},
+        {"type": "output_text", "text": 1},
     ],
 )
-def test_validate_responses_body_rejects_wrong_typed_input_fields(item, param) -> None:
-    # Type validation of present fields is still enforced.
-    with pytest.raises(OpenAIRequestError) as exc:
-        native_responses.validate_responses_body({"model": "test", "input": [item]})
-
-    assert exc.value.param == param
+def test_validate_responses_body_accepts_any_typed_input_fields(item) -> None:
+    # Input-side fields are not type-checked; the open Fireworks input schema
+    # forwards any JSON value as-is and upstream decides.
+    native_responses.validate_responses_body({"model": "test", "input": [item]})
 
 
 def test_build_responses_adapter_normalizes_official_image_and_function_outputs() -> None:
