@@ -290,10 +290,13 @@ def _validate_responses_input(value: Any) -> None:
 
 def _validate_responses_tool(tool: Any, *, index: int) -> None:
     # Fireworks tools schema is items: {additionalProperties: true, type: object}
-    # — fully open, upstream does not validate tool internal fields. We keep a
-    # light-touch guard (tool must be a non-empty object with a known "type")
-    # and otherwise validate only the TYPES of fields that are present, not
-    # their presence/non-emptiness. Forward as-is and let Fireworks decide.
+    # — fully open, upstream does not validate tool internal fields and accepts
+    # arbitrary extra fields. OpenAI also keeps adding new tool fields (e.g.
+    # web_search.external_web_access / return_token_budget / image_settings),
+    # so a static allowlist would go stale and reject valid client requests.
+    # We therefore do NOT reject unknown tool fields. We only guard the tool
+    # shape (non-empty object with a known "type"), require function.name, and
+    # type-check the fields we recognise — forwarding everything else as-is.
     if not isinstance(tool, dict) or not tool:
         raise_openai_error("tool object must include 'type'", param=f"tools[{index}].type", code="invalid_request_error")
     tool_type = tool.get("type")
@@ -308,10 +311,6 @@ def _validate_responses_tool(tool: Any, *, index: int) -> None:
                 raise_openai_error("function tools require function.name", param=f"tools[{index}].function.name", code="invalid_request_error")
             if function.get("name") is not None and not isinstance(function.get("name"), str):
                 raise_openai_error("function.name must be a string", param=f"tools[{index}].function.name", code="invalid_request_error")
-            allowed_function_keys = {"name", "description", "parameters", "schema", "strict"}
-            for key in function:
-                if key not in allowed_function_keys:
-                    raise_openai_error(f"unsupported function tool field '{key}'", param=f"tools[{index}].function.{key}", code="unsupported_parameter")
             if "parameters" in function and function["parameters"] is not None and not isinstance(function["parameters"], dict):
                 raise_openai_error("function.parameters must be an object", param=f"tools[{index}].function.parameters", code="invalid_request_error")
             if "description" in function and function["description"] is not None and not isinstance(function["description"], str):
@@ -319,10 +318,6 @@ def _validate_responses_tool(tool: Any, *, index: int) -> None:
             if "strict" in function and function["strict"] is not None and not isinstance(function["strict"], bool):
                 raise_openai_error("function.strict must be a boolean", param=f"tools[{index}].function.strict", code="invalid_request_error")
         else:
-            allowed_flat_keys = {"type", "name", "description", "parameters", "strict"}
-            for key in tool:
-                if key not in allowed_flat_keys:
-                    raise_openai_error(f"unsupported function tool field '{key}'", param=f"tools[{index}].{key}", code="unsupported_parameter")
             if "name" not in tool:
                 raise_openai_error("function tools require name", param=f"tools[{index}].name", code="invalid_request_error")
             if tool.get("name") is not None and not isinstance(tool.get("name"), str):
@@ -334,12 +329,7 @@ def _validate_responses_tool(tool: Any, *, index: int) -> None:
             if "strict" in tool and tool["strict"] is not None and not isinstance(tool["strict"], bool):
                 raise_openai_error("function.strict must be a boolean", param=f"tools[{index}].strict", code="invalid_request_error")
     elif tool_type == "mcp":
-        allowed_mcp_keys = {"type", "server_url", "url", "label", "name", "server_label", "server_description", "allowed_tools", "headers", "require_approval"}
-        for key in tool:
-            if key not in allowed_mcp_keys:
-                raise_openai_error(f"unsupported mcp tool field '{key}'", param=f"tools[{index}].{key}", code="unsupported_parameter")
-        # Type-check string fields only; do not require non-empty (Fireworks
-        # tools schema is open and does not constrain these).
+        # Type-check known string fields only; unknown fields are forwarded.
         for key in ("server_url", "url", "label", "name", "server_label", "server_description"):
             if key in tool and tool[key] is not None and not isinstance(tool[key], str):
                 raise_openai_error(f"mcp tools {key} must be a string when provided", param=f"tools[{index}].{key}", code="invalid_request_error")
@@ -368,12 +358,12 @@ def _validate_responses_tool(tool: Any, *, index: int) -> None:
         if "name" in tool and tool["name"] is not None and not isinstance(tool["name"], str):
             raise_openai_error("python tools name must be a string when provided", param=f"tools[{index}].name", code="invalid_request_error")
     elif tool_type == "web_search":
-        allowed_web_search_keys = {"type", "search_context_size", "user_location", "filters"}
-        for key in tool:
-            if key not in allowed_web_search_keys:
-                raise_openai_error(f"unsupported web_search tool field '{key}'", param=f"tools[{index}].{key}", code="unsupported_parameter")
-        if "search_context_size" in tool and tool["search_context_size"] is not None and tool["search_context_size"] not in {"low", "medium", "high"}:
-            raise_openai_error("web_search.search_context_size must be low, medium, or high", param=f"tools[{index}].search_context_size", code="invalid_request_error")
+        # OpenAI keeps extending web_search (external_web_access,
+        # return_token_budget, search_content_types, image_settings, ...).
+        # Fireworks' open tools schema does not constrain these, so forward any
+        # field as-is. Only type-check search_context_size when it is present.
+        if "search_context_size" in tool and tool["search_context_size"] is not None and not isinstance(tool["search_context_size"], str):
+            raise_openai_error("web_search.search_context_size must be a string", param=f"tools[{index}].search_context_size", code="invalid_request_error")
 
 
 

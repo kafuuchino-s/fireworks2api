@@ -24,9 +24,7 @@ client = TestClient(app)
         ({"model": "test", "input": "hello", "previous_response_id": ""}, "previous_response_id"),
         ({"model": "test", "input": "hello", "tool_choice": 1}, "tool_choice"),
         ({"model": "test", "input": "hello", "tool_choice": {"type": 1}}, "tool_choice.type"),
-        ({"model": "test", "input": "hello", "tools": [{"type": "function", "function": {"name": "lookup", "extra": True}}]}, "tools[0].function.extra"),
         ({"model": "test", "input": "hello", "tools": [{"type": "function", "name": "lookup", "parameters": []}]}, "tools[0].parameters"),
-        ({"model": "test", "input": "hello", "tools": [{"type": "mcp", "server_url": "https://example.com", "extra": True}]}, "tools[0].extra"),
         ({"model": "test", "input": "hello", "tools": [{"type": "mcp", "server_url": "https://example.com", "headers": [1]}]}, "tools[0].headers"),
         ({"model": "test", "input": "hello", "tools": [{"type": "mcp", "server_url": "https://example.com", "headers": {"Authorization": 1}}]}, "tools[0].headers.Authorization"),
         ({"model": "test", "input": "hello", "user": 1}, "user"),
@@ -52,6 +50,24 @@ def test_validate_responses_body_rejects_invalid_native_fields(body, param) -> N
     ],
 )
 def test_validate_responses_body_accepts_tools_with_empty_optional_fields(tool) -> None:
+    native_responses.validate_responses_body({"model": "test", "input": "hello", "tools": [tool]})
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [
+        # OpenAI keeps extending tool schemas (web_search.external_web_access,
+        # return_token_budget, search_content_types, image_settings, ...).
+        # Fireworks tools schema is additionalProperties: true (open), so any
+        # extra field is forwarded as-is rather than rejected.
+        {"type": "web_search", "external_web_access": False},
+        {"type": "web_search", "search_context_size": "high", "return_token_budget": "unlimited", "search_content_types": ["image", "text"], "image_settings": {"max_results": 3, "caption": True}},
+        {"type": "function", "name": "lookup", "extra_field": True},
+        {"type": "function", "function": {"name": "lookup", "extra_field": True}},
+        {"type": "mcp", "server_url": "https://example.com", "extra_field": True},
+    ],
+)
+def test_validate_responses_body_accepts_unknown_tool_fields(tool) -> None:
     native_responses.validate_responses_body({"model": "test", "input": "hello", "tools": [tool]})
 
 
