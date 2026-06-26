@@ -13,7 +13,6 @@ from .common import RESPONSES_PUBLIC_FIELDS, _copy_allowed, _require_present, _v
 from .common import build_adapter_headers
 
 
-_RESPONSES_TOOL_TYPES = {"function", "mcp", "sse", "python", "web_search"}
 _RESPONSES_INPUT_PART_TYPES = {"text", "input_text", "output_text", "input_image", "image"}
 _RESPONSES_TEXT_PART_TYPES = {"text", "input_text", "output_text"}
 _RESPONSES_OUTPUT_ITEM_TYPES = {"tool_output", "function_call"}
@@ -290,20 +289,23 @@ def _validate_responses_input(value: Any) -> None:
 
 def _validate_responses_tool(tool: Any, *, index: int) -> None:
     # Fireworks tools schema is items: {additionalProperties: true, type: object}
-    # — fully open, upstream does not validate tool internal fields and accepts
-    # arbitrary extra fields. OpenAI also keeps adding new tool fields (e.g.
-    # web_search.external_web_access / return_token_budget / image_settings),
-    # so a static allowlist would go stale and reject valid client requests.
-    # We therefore do NOT reject unknown tool fields. We only guard the tool
-    # shape (non-empty object with a known "type"), require function.name, and
-    # type-check the fields we recognise — forwarding everything else as-is.
+    # — fully open (post-responses.md: tools.items is an open object array). Upstream
+    # does not validate tool internal fields and accepts arbitrary extra fields, and
+    # Fireworks itself enforces the supported tool types ("function", "mcp", "sse",
+    # "python"). A static type allowlist here would be both redundant (Fireworks
+    # already rejects unsupported types with an identical "unsupported tool type"
+    # message) and fragile — OpenAI keeps adding tool types/fields, and our list can
+    # drift from Fireworks' real capability (we previously listed "web_search", which
+    # Fireworks does not support). We therefore do NOT gate on the tool type value.
+    # We only guard the structural shape (non-empty object with a string "type"),
+    # require function.name, and type-check the fields we recognise — forwarding any
+    # type and everything else as-is to Fireworks, which is the authority on which
+    # types are actually supported.
     if not isinstance(tool, dict) or not tool:
         raise_openai_error("tool object must include 'type'", param=f"tools[{index}].type", code="invalid_request_error")
     tool_type = tool.get("type")
     if not isinstance(tool_type, str) or not tool_type:
         raise_openai_error("tool object must include 'type'", param=f"tools[{index}].type", code="invalid_request_error")
-    if tool_type not in _RESPONSES_TOOL_TYPES:
-        raise_openai_error(f"unsupported tool type '{tool_type}'", param=f"tools[{index}].type", code="unsupported_parameter")
     if tool_type == "function":
         function = tool.get("function")
         if isinstance(function, dict):

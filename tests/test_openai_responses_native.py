@@ -65,6 +65,12 @@ def test_validate_responses_body_accepts_tools_with_empty_optional_fields(tool) 
         {"type": "function", "name": "lookup", "extra_field": True},
         {"type": "function", "function": {"name": "lookup", "extra_field": True}},
         {"type": "mcp", "server_url": "https://example.com", "extra_field": True},
+        # Unknown tool types (e.g. "custom") are forwarded as-is — Fireworks is the
+        # authority on which types are supported and rejects unsupported ones itself
+        # with an identical "unsupported tool type" message, so we must not gate on the
+        # type value ahead of upstream.
+        {"type": "custom", "url": "https://example.com"},
+        {"type": "code_interpreter"},
     ],
 )
 def test_validate_responses_body_accepts_unknown_tool_fields(tool) -> None:
