@@ -48,6 +48,19 @@ class Settings(BaseSettings):
     transform_debug_level: str = "summary"
     anthropic_messages_mode: str = "native"
 
+    # Web search via Grok — server-side implementation of the OpenAI Responses API
+    # built-in "web_search" tool. Fireworks models do not have a built-in web search,
+    # so the proxy implements an agentic loop: it exposes web_search to the Fireworks
+    # model as a function tool, intercepts the resulting function_call, runs the search
+    # against a Grok OpenAI-compatible endpoint, feeds the result back, and lets the
+    # Fireworks model compose the final answer. Disabled by default.
+    web_search_enabled: bool = False
+    grok_api_url: str | None = None
+    grok_api_key: str | None = None
+    grok_model: str = "grok-4-fast"
+    web_search_max_iterations: int = 3
+    web_search_timeout_seconds: float = 60.0
+
     cooldown_rate_limit_seconds: int = 60
     cooldown_5xx_seconds: int = 20
     cooldown_network_seconds: int = 30

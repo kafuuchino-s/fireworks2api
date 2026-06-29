@@ -4,6 +4,7 @@ from dataclasses import is_dataclass, replace
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from app.dataplane.fireworks.paths import resolve_inference_path
 from app.dataplane.fireworks.route_trace import build_route_transform_trace
@@ -174,6 +175,22 @@ async def _handle_responses(request: Request):
         routing_metadata=getattr(context, "routing_metadata", None),
     )
     record_proxy_transform_debug(context, endpoint="responses", upstream_endpoint=upstream_path, payload=payload, headers=headers, stream=bool(payload.get("stream")), service_tier=payload.get("service_tier") if isinstance(payload.get("service_tier"), str) else None, field_changes=report["field_changes"], warnings=report["warnings"])
+    # Server-side web_search built-in tool (via Grok). When the request carries a
+    # web_search tool the proxy runs an agentic loop here and returns a single JSON
+    # response; streaming requests are transparently downgraded to non-streaming.
+    # Returns None when there is no web_search tool, leaving the passthrough path below
+    # untouched (zero regression for ordinary requests).
+    from app.products.openai.websearch_loop import run_responses_web_search_loop
+    try:
+        web_search_result = await run_responses_web_search_loop(
+            context, body, payload, headers, upstream_path=upstream_path
+        )
+    except OpenAIRequestError as exc:
+        return openai_error_response_json(exc.message, param=exc.param, code=exc.code, status_code=exc.status_code)
+    if web_search_result is not None:
+        if isinstance(web_search_result, dict) and web_search_result.get("status") is None:
+            web_search_result.setdefault("status", "completed")
+        return JSONResponse(status_code=200, content=web_search_result)
     proxy_kwargs = {
         "endpoint": "responses",
         "upstream_path": upstream_path,

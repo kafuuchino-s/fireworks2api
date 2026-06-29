@@ -45,6 +45,10 @@ Environment:
   FIREWORKS2API_SMOKE_IMAGES      Enable opt-in multimodal image smoke cases; default false
   FIREWORKS2API_IMAGE_URL         Optional image URL for multimodal smoke
   FIREWORKS2API_SMOKE_REASONING   Enable opt-in reasoning smoke cases; default false
+  FIREWORKS2API_SMOKE_WEB_SEARCH  Enable opt-in Responses web_search smoke case; default false
+                                 (requires WEB_SEARCH_ENABLED=true + GROK_API_KEY on the proxy)
+  FIREWORKS2API_WEB_SEARCH_QUERY  Query text for the web_search smoke case
+  FIREWORKS2API_SMOKE_STRICT_WEB_SEARCH  Fail when web_search produces no call/sources; default false
 """
 
 from __future__ import annotations
@@ -187,6 +191,13 @@ def extract_responses_tool_calls(payload: Any) -> list[dict[str, Any]]:
         if item.get("type") in {"function_call", "tool_call", "mcp_call"} or "call_id" in item or "tool_call_id" in item:
             calls.append(item)
     return calls
+
+
+def extract_web_search_calls(payload: Any) -> list[dict[str, Any]]:
+    return [
+        item for item in extract_responses_output_items(payload)
+        if isinstance(item, dict) and item.get("type") in {"web_search_call", "web_search"}
+    ]
 
 
 def extract_anthropic_text_preview(payload: Any, limit: int = 160) -> str | None:
@@ -387,6 +398,9 @@ def main() -> int:
     smoke_strict_mcp = env_bool("FIREWORKS2API_SMOKE_STRICT_MCP", False)
     smoke_images = env_bool("FIREWORKS2API_SMOKE_IMAGES", False)
     smoke_reasoning = env_bool("FIREWORKS2API_SMOKE_REASONING", False)
+    smoke_web_search = env_bool("FIREWORKS2API_SMOKE_WEB_SEARCH", False)
+    smoke_web_search_query = env("FIREWORKS2API_WEB_SEARCH_QUERY", "What is the latest AI news this week?")
+    smoke_web_search_strict = env_bool("FIREWORKS2API_SMOKE_STRICT_WEB_SEARCH", False)
     mcp_server_url = env("FIREWORKS2API_MCP_SERVER_URL") or (mcp_server_urls[0] if mcp_server_urls else "")
     image_url = env("FIREWORKS2API_IMAGE_URL")
     responses_image_shape = env("FIREWORKS2API_RESPONSES_IMAGE_SHAPE", "image")
@@ -524,6 +538,49 @@ def main() -> int:
                 print("[skip] responses tools (FIREWORKS2API_RESPONSES_MODEL not set)")
         else:
             print("[skip] responses tools (FIREWORKS2API_SMOKE_TOOLS=false)")
+
+        if smoke_web_search:
+            if responses_model:
+                def responses_web_search_smoke() -> None:
+                    # Exercises the server-side web_search built-in tool. The proxy must
+                    # run its agentic loop (Fireworks function_call -> Grok search -> feed
+                    # back) and return a web_search_call output item with sources.
+                    result = request_json(
+                        client,
+                        "POST",
+                        "/v1/responses",
+                        verbose=smoke_verbose,
+                        json={
+                            "model": responses_model,
+                            "input": smoke_web_search_query,
+                            "tools": [{"type": "web_search"}],
+                        },
+                    )
+                    payload = result.json()
+                    assert result.status_code // 100 == 2, f"web_search responses failed: {result.status_code} {result.text[:200]}"
+                    ws_calls = extract_web_search_calls(payload)
+                    if not ws_calls:
+                        msg = "no web_search_call in output (model may not have invoked web_search)"
+                        if smoke_web_search_strict:
+                            raise AssertionError(msg)
+                        print(f"[warn] {msg}")
+                        return
+                    call = ws_calls[0]
+                    queries = call.get("queries") or []
+                    sources = call.get("sources") or []
+                    print(f"[info] responses web_search: queries={queries} sources={len(sources)}")
+                    if smoke_web_search_strict:
+                        assert queries, "expected at least one web_search query"
+                        assert sources, "expected at least one web_search source"
+                    # The sources must also be surfaced in the assistant message text.
+                    text = extract_responses_text(payload)
+                    if sources and not any(isinstance(s, dict) and str(s.get("url")) in text for s in sources):
+                        print("[warn] sources not appended to assistant output_text")
+                maybe_call("responses web_search", responses_web_search_smoke)
+            else:
+                print("[skip] responses web_search (FIREWORKS2API_RESPONSES_MODEL not set)")
+        else:
+            print("[skip] responses web_search (FIREWORKS2API_SMOKE_WEB_SEARCH=false)")
 
         if smoke_mcp:
             if responses_model:
